@@ -1515,8 +1515,93 @@ internal static class WindowFocus
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    struct WinRect { public int Left, Top, Right, Bottom; }
+    internal struct WinRect { public int Left, Top, Right, Bottom; }
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr hWnd, out WinRect rect);
+
+    // ── Quiet restore ───────────────────────────────────────────────────────
+    // Roblox only takes a key tap while its window has focus, so a minimised (or
+    // hidden) window has to be brought back for a moment. Done the plain way
+    // (ShowWindow restore, then minimise) the window visibly opens on screen
+    // and drops back to the taskbar again. Instead the window is cloaked (kept
+    // out of the picture, as when it is on another virtual desktop) where
+    // Windows allows that, restored without activating, moved far outside every
+    // monitor, and its open/close animation is switched off; afterwards it is
+    // minimised again and its remembered place is put back as it was, so it
+    // restores from the taskbar where the user left it. While it is tapped it
+    // is a real, restored, focused window. Only window calls are used, the ones
+    // the taskbar itself makes.
+    [StructLayout(LayoutKind.Sequential)] internal struct WinPoint { public int X, Y; }
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct WinPlacement
+    {
+        public int Length, Flags, ShowCmd;
+        public WinPoint MinPos, MaxPos;
+        public WinRect Normal;
+    }
+    [DllImport("user32.dll")] static extern bool GetWindowPlacement(IntPtr hWnd, ref WinPlacement placement);
+    [DllImport("user32.dll")] static extern bool SetWindowPlacement(IntPtr hWnd, ref WinPlacement placement);
+    [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
+    [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr hWnd, int attribute, ref int value, int size);
+
+    const int DWMWA_TRANSITIONS_FORCEDISABLED = 3;
+    const int DWMWA_CLOAK = 13;
+    const int SW_SHOWMINNOACTIVE = 7;
+    const uint SWP_QUIET = 0x1 | 0x4 | 0x10; // no size change, no z-order change, no activation
+    // Beyond any desktop, the same distance Windows itself parks minimised windows at.
+    const int OffscreenAt = -30000;
+
+    public sealed class QuietWindow
+    {
+        internal IntPtr Hwnd;
+        internal WinPlacement Original;
+        internal bool Cloaked;
+    }
+
+    static bool DwmFlag(IntPtr hWnd, int attribute, bool on)
+    {
+        try { int v = on ? 1 : 0; return DwmSetWindowAttribute(hWnd, attribute, ref v, 4) == 0; }
+        catch { return false; }
+    }
+
+    // Restores a minimised or hidden window out of sight, without activating it.
+    // Null when it couldn't be read; the caller then restores it the plain way.
+    public static QuietWindow RestoreOffscreen(IntPtr hWnd)
+    {
+        try
+        {
+            var p = new WinPlacement();
+            p.Length = Marshal.SizeOf(typeof(WinPlacement));
+            if (!GetWindowPlacement(hWnd, ref p)) return null;
+            var q = new QuietWindow { Hwnd = hWnd, Original = p };
+            q.Cloaked = DwmFlag(hWnd, DWMWA_CLOAK, true);
+            DwmFlag(hWnd, DWMWA_TRANSITIONS_FORCEDISABLED, true);
+            ShowWindow(hWnd, SW_SHOWNOACTIVATE);
+            // Straight away, so that if cloaking isn't allowed it is on screen for as short as it can be.
+            SetWindowPos(hWnd, IntPtr.Zero, OffscreenAt, OffscreenAt, 0, 0, SWP_QUIET);
+            return q;
+        }
+        catch { return null; }
+    }
+
+    // Minimises the window again and puts its remembered place back as it was.
+    public static void PutBack(QuietWindow q)
+    {
+        if (q == null || !IsWindow(q.Hwnd)) return;
+        try
+        {
+            // One call does both: minimises the window and records the place it came
+            // from as the one it restores to, so it never sits at that place on screen.
+            var back = q.Original;
+            back.ShowCmd = SW_SHOWMINNOACTIVE;
+            if (!SetWindowPlacement(q.Hwnd, ref back)) ShowWindow(q.Hwnd, SW_SHOWMINNOACTIVE);
+        }
+        catch { }
+        finally
+        {
+            if (q.Cloaked) DwmFlag(q.Hwnd, DWMWA_CLOAK, false);
+            DwmFlag(q.Hwnd, DWMWA_TRANSITIONS_FORCEDISABLED, false);
+        }
+    }
 
     // The game window of one process: its largest visible, titled top-level
     // window. Process.MainWindowHandle takes the first visible unowned window
@@ -1781,7 +1866,8 @@ internal static class HiddenWindows
 // Roblox only registers input while its window is focused, so a background
 // PostMessage is ignored by unfocused instances. To keep EVERY instance alive,
 // each Roblox window is briefly foregrounded in turn (restoring it first if it
-// was minimised), given a real key tap via keybd_event, then put back. The
+// was minimised, off-screen so it never shows), given a real key tap via
+// keybd_event, then put back. The
 // originally-focused window is restored after each pass. Per-instance timers
 // mean each account is tapped the moment IT reaches the deadline (instances
 // launched at different times have independent countdowns) -- including
@@ -1927,9 +2013,14 @@ internal static class AntiAfk
     static bool TapWindow(IntPtr hWnd, byte vk, byte scan, Random rng)
     {
         bool wasMinimised = WindowFocus.IsIconic(hWnd);
+        WindowFocus.QuietWindow quiet = null;
         try
         {
-            if (wasMinimised) WindowFocus.ShowWindow(hWnd, WindowFocus.SW_RESTORE);
+            if (wasMinimised)
+            {
+                quiet = WindowFocus.RestoreOffscreen(hWnd);
+                if (quiet == null) WindowFocus.ShowWindow(hWnd, WindowFocus.SW_RESTORE); // the plain way
+            }
             // keybd_event goes to whatever has focus. If the switch doesn't
             // take (window closed, foreground lock refused), the tap would land
             // in the user's own app instead of Roblox, so skip it.
@@ -1947,7 +2038,8 @@ internal static class AntiAfk
         catch { return false; }
         finally
         {
-            if (wasMinimised) WindowFocus.ShowWindow(hWnd, WindowFocus.SW_MINIMIZE);
+            if (quiet != null) WindowFocus.PutBack(quiet);
+            else if (wasMinimised) WindowFocus.ShowWindow(hWnd, WindowFocus.SW_MINIMIZE);
             HiddenWindows.HideAgainIfHidden(hWnd);
         }
     }

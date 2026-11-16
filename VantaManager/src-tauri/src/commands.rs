@@ -56,7 +56,7 @@ const PRIVATE_SETTINGS: [&str; 5] = [
     "_deviceKey",
     encryption::GEN_KEY_SETTING,
 ];
-const BACKEND_OWNED_SETTINGS: [&str; 3] = ["kdfSalt", "_deviceKey", "keySet"];
+const BACKEND_OWNED_SETTINGS: [&str; 4] = ["kdfSalt", "_deviceKey", "keySet", "bandwidthApplied"];
 
 #[tauri::command]
 pub fn settings_load() -> Value {
@@ -324,16 +324,14 @@ pub fn fflag_write(flags: Value) -> bool {
 /// The allowlisted flags the custom list can set, and the saved list.
 #[tauri::command]
 pub fn custom_fflags_load() -> Value {
+    crate::native::profile::migrate_scopes();
     let list = crate::settings::snapshot()
         .get(crate::native::profile::CUSTOM_KEY)
         .cloned()
         .unwrap_or_else(|| Value::Array(Vec::new()));
     json!({
         "allowed": crate::native::profile::allowed_for_ui(),
-        "list": Value::Array(crate::native::profile::parse_entries(Some(&list)).into_iter().map(|e| match e.accounts {
-            Some(a) => json!({ "name": e.name, "value": e.value, "accounts": a }),
-            None => json!({ "name": e.name, "value": e.value }),
-        }).collect()),
+        "list": Value::Array(crate::native::profile::parse_entries(Some(&list)).into_iter().map(|e| json!({ "name": e.name, "value": e.value })).collect()),
     })
 }
 
@@ -344,6 +342,18 @@ pub fn custom_fflags_save(list: Value) -> Value {
         Ok(kept) => json!({ "ok": true, "list": kept }),
         Err(e) => json!({ "ok": false, "error": e }),
     }
+}
+
+/// Whether the upload limit this app set is still in force.
+#[tauri::command]
+pub fn bandwidth_status() -> Value {
+    crate::native::bandwidth_status()
+}
+
+/// Sets (on) or removes the upload limit. Windows asks for admin rights.
+#[tauri::command]
+pub async fn bandwidth_apply(on: bool, kbps: f64) -> Value {
+    crate::native::apply_bandwidth(on, kbps).await
 }
 
 #[tauri::command]
@@ -364,6 +374,14 @@ pub fn fps_write(cap: f64) -> Value {
 // ---- roblox installs (vanilla + bootstrappers) ----
 #[tauri::command]
 pub fn roblox_list_installs() -> Value {
+    crate::native::list_installs()
+}
+
+/// Looks again right now, past the short cache: for after something was
+/// installed while the app was open.
+#[tauri::command]
+pub fn roblox_rescan_installs() -> Value {
+    crate::native::invalidate_install_cache();
     crate::native::list_installs()
 }
 

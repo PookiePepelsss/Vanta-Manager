@@ -53,6 +53,8 @@
     getRunningCount: () => invoke('roblox_running_count'),
     getWatchedIds: () => invoke('roblox_watched_ids'),
     trimRobloxMemory: () => invoke('roblox_trim_memory'),
+    getBandwidth: () => invoke('bandwidth_status'),
+    applyBandwidth: (on, kbps) => invoke('bandwidth_apply', { on: !!on, kbps: Number(kbps) || 0 }),
     trimAccountMemory: (id) => invoke('roblox_trim_account_memory', { id }),
     setAccountPriority: (id, priority) => invoke('roblox_set_account_priority', { id, priority }),
     // Per-account RAM cap in MB (0 = fall back to the global ramLimitMb
@@ -65,6 +67,7 @@
     windowPreviews: () => invoke('roblox_previews'),
     // Every detected Roblox install root, vanilla and bootstrappers alike.
     listInstalls: () => invoke('roblox_list_installs'),
+    rescanInstalls: () => invoke('roblox_rescan_installs'),
     onAllRobloxClosed: (cb) => listen('roblox:allClosed', () => cb()),
 
     // persistTarget false launches there without changing the account's saved target.

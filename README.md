@@ -100,7 +100,7 @@ In **Edit account**, then **Performance**, each account gets its own:
 - FPS cap, from 10 to unlimited
 - Graphics quality
 - Window mode: *Default*, *Normal*, *Small*, *Minimized* or *Headless*
-- Advanced graphics: on, off, or follow Settings
+- Advanced graphics: follow Settings, or use Roblox's own choices
 
 These are applied right before the client starts, and your shared values are put back afterwards, so one account's setup never leaks into another's. Capping alts to 15 to 30 FPS and running them minimized or headless saves the most.
 
@@ -113,11 +113,22 @@ These are applied right before the client starts, and your shared values are put
 - If Vanta Manager closes, every headless window comes back to the taskbar
 
 **Mixer and graphics**
-- Render quality, FPS cap and volume for every running instance in one panel
+- Render quality, FPS cap and volume for every running instance in one panel. Nothing is saved until you press **Apply and save**
 - The FPS cap can be protected, so Roblox can't reset it
-- **Advanced graphics**: anti-aliasing (x1 to x8), texture quality and grass on or off, through Roblox's own allowlisted flags
-- **Custom FFlags**: add flags from Roblox's allowlist and apply each to every account or only the ones you pick
+- **Advanced graphics**: anti-aliasing (x1 to x8), texture quality and grass. Each stays on Roblox's own choice until you pick a value, and it uses Roblox's own allowlisted flags
+- **Custom FFlags**: add flags from Roblox's allowlist, and they apply to every account
 - Choose the graphics API (Direct3D 11, OpenGL or Vulkan) in Settings
+
+**CPU, memory and network limits**
+
+In **Settings**, then **Performance**:
+- **Adaptive limits** cap the CPU of clients that aren't in front (50% down to 5% of your CPU), put them in efficiency mode, and trim their memory on a timer. The client you are using keeps its full speed
+- **Fair CPU cap** shares the CPU evenly as more clients run, and **Spread clients over CPU cores** gives each client its own cores
+- **Throttle on high memory** holds a client to a low CPU limit once it passes a size you set, and **Restart on high memory** relaunches it into its game
+- RAM limit per instance, RAM trim (manual or automatic), and lower CPU priority once several accounts run
+- **Bandwidth limit** caps the upload of all Roblox clients together with a Windows QoS policy. Windows asks for admin rights each time, and the limit lasts until Windows restarts
+
+Limits only change how much CPU, memory or bandwidth a client gets. Nothing is injected into Roblox, and everything is lifted when you turn a setting off or close Vanta Manager.
 
 **Auto layout and groups**
 - Auto layout tiles your running windows in rows. Pick a size from 320 × 180 up to 960 × 540, or enter your own, choose the starting corner and the gap, and put the windows back with one click
@@ -133,7 +144,6 @@ These are applied right before the client starts, and your shared values are put
 
 **Everything else**
 - Anti-AFK taps a key into every open Roblox window on an interval you choose (5 to 17 minutes), so the idle kick never fires
-- RAM limiter per instance, RAM trim (manual or automatic), and lower CPU priority once several accounts run
 - A live log viewer with in-page search (Ctrl+F)
 - 13 themes, and a search box that finds any setting
 

@@ -6,11 +6,15 @@
 //   process     enumerating, killing, trimming and prioritising instances
 //   install     finding Roblox installs (vanilla and bootstrappers), spawning the client
 //   memory      per-instance RAM limiter and memory readout
+//   governor    CPU caps, core spreading and memory throttling for the running clients
+//   bandwidth   the upload limit for Roblox (a Windows QoS policy)
 //   watch       the shared poll that notices instances closing
 //   launch      the launch pipeline and its cancellation registry
 //   profile     per-account FPS, graphics, custom FFlags and window at launch
 //   windows_view  laying the windows out small in rows, and their tiny previews
+mod bandwidth;
 mod daemon;
+mod governor;
 mod helper_exe;
 mod install;
 mod launch;
@@ -29,6 +33,8 @@ pub use helper_exe::ensure_native_helper;
 pub use install::{
     fflag_paths, get_fflag_path, invalidate_cache as invalidate_install_cache, list_installs,
 };
+pub use bandwidth::{apply as apply_bandwidth, status as bandwidth_status};
+pub use governor::{release_all as release_governor, start as start_governor};
 pub use launch::{cancel_launch, launch_queued};
 pub use sysstats::system_stats;
 pub use windows_view::{layout as layout_windows, previews as window_previews, LayoutOptions};

@@ -146,6 +146,11 @@ fn memory_of(_pid: u32) -> Option<(u64, u64)> {
     None
 }
 
+/// A client's working set in MB, if it can be read.
+pub(super) fn working_set_mb(pid: u32) -> Option<u64> {
+    memory_of(pid).map(|(ws, _)| ws / (1024 * 1024))
+}
+
 fn pid_of(state: &AppState, account_id: &str) -> Option<u32> {
     state.account_pids.lock().unwrap().get(account_id).copied()
 }
@@ -196,7 +201,7 @@ fn loading() -> std::sync::MutexGuard<'static, HashMap<u32, Instant>> {
     LOADING.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn is_loading(pid: u32) -> bool {
+pub(super) fn is_loading(pid: u32) -> bool {
     loading()
         .get(&pid)
         .is_some_and(|t| t.elapsed() < APPLY_DELAY)

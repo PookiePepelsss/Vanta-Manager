@@ -1,6 +1,6 @@
 [package]
 name = "mr_tauri"
-version = "1.2.8"
+version = "1.2.9"
 description = "Run and manage multiple Roblox accounts"
 authors = ["Vanta Manager"]
 edition = "2021"
@@ -54,6 +54,8 @@ windows = { version = "0.58", features = [
   "Win32_System_SystemInformation",
   "Win32_System_Registry",
   "Win32_Storage_FileSystem",
+  "Win32_System_JobObjects",
+  "Win32_UI_WindowsAndMessaging",
 ] }
 # Same versions Tauri's WebView2 layer uses (see Cargo.lock), for asking the
 # hidden window to drop its memory.

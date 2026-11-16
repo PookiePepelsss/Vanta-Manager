@@ -208,7 +208,7 @@ window.DEFAULT_THEME = 'dark';
               <div class="mix-row">
                 <label class="mix-auto"><span class="toggle sm"><input type="checkbox" id="mix-gfx-auto" onchange="mixGfxAutoToggle()"/><span class="toggle-trk"></span></span> Auto</label>
                 <input type="range" class="fps-slider" id="mix-gfx" min="1" max="21" step="1" value="10"
-                       oninput="mixGfxInput(this.value)" onchange="mixGfxCommit()"/>
+                       oninput="mixGfxInput(this.value)"/>
                 <span class="fps-val-label" id="mix-gfx-val">10</span>
               </div>
             </div>
@@ -224,24 +224,24 @@ window.DEFAULT_THEME = 'dark';
               <div class="mix-row">
                 <label class="mix-auto"><span class="toggle sm"><input type="checkbox" id="mix-fps-unl" onchange="mixFpsUnlToggle()"/><span class="toggle-trk"></span></span> Unlimited</label>
                 <input type="range" class="fps-slider" id="mix-fps" min="10" max="9999" step="1" value="60"
-                       oninput="mixFpsInput(this.value)" onchange="mixFpsCommit()"/>
+                       oninput="mixFpsInput(this.value)"/>
                 <span class="fps-val-label" id="mix-fps-val" style="min-width:40px">60</span>
               </div>
             </div>
-            <div class="sr"><div class="sr-left"><div class="sr-label">Protect FPS cap</div><div class="sr-desc">Roblox resets the cap when a client closes or its in-game settings change. While this is on, Vanta Manager puts your cap back within a few seconds and again before every launch.</div></div><label class="toggle"><input type="checkbox" id="mix-fps-lock" checked onchange="mixFpsLockToggle()"/><span class="toggle-trk"></span></label></div>
+            <div class="sr"><div class="sr-left"><div class="sr-label">Protect FPS cap</div><div class="sr-desc">Roblox resets the cap when a client closes or its in-game settings change. While this is on, Vanta Manager puts your cap back within a few seconds and again before every launch.</div></div><label class="toggle"><input type="checkbox" id="mix-fps-lock" checked onchange="mixDirty()"/><span class="toggle-trk"></span></label></div>
           </div>
           <!-- Volume -->
           <div class="sc">
             <div class="sc-head">Master Volume</div>
             <div class="sr" style="flex-direction:column;align-items:stretch;gap:10px">
               <div class="sr-left">
-                <div class="sr-label">Roblox volume <span class="badge g" style="margin-left:6px">Live</span></div>
-                <div class="sr-desc">Adjusts the OS volume of every running Roblox window instantly. Re-applied to new launches.</div>
+                <div class="sr-label">Roblox volume</div>
+                <div class="sr-desc">Sets the volume of every running Roblox window. Re-applied to new launches.</div>
               </div>
               <div class="mix-row">
                 <span class="material-icons-round" style="font-size:17px;color:var(--t3);flex-shrink:0">volume_up</span>
                 <input type="range" class="fps-slider" id="mix-vol" min="0" max="100" step="1" value="100"
-                       oninput="mixVolInput(this.value)" onchange="mixVolCommit()"/>
+                       oninput="mixVolInput(this.value)"/>
                 <span class="fps-val-label" id="mix-vol-val" style="min-width:40px">100%</span>
               </div>
             </div>
@@ -251,7 +251,7 @@ window.DEFAULT_THEME = 'dark';
             <div class="sc-head">Custom FFlags</div>
             <div class="sr" style="padding-bottom:6px">
               <div class="sr-left">
-                <div class="sr-desc">Only flags on Roblox's allowlist are offered, since the client ignores the rest. Each one can apply to every account or only to the accounts you pick. Used from the next launch.</div>
+                <div class="sr-desc">Only flags on Roblox's allowlist are offered, since the client ignores the rest. Each one applies to every account. Used from the next launch.</div>
               </div>
             </div>
             <div class="ff-list" id="ff-list"></div>
@@ -264,8 +264,9 @@ window.DEFAULT_THEME = 'dark';
             <button class="btn btn-danger kill-roblox-btn" onclick="mixKillAll()" id="mix-kill-btn">
               <span class="material-icons-round" style="font-size:15px">power_settings_new</span>Kill all Roblox
             </button>
+            <span class="mix-pending" id="mix-pending" role="status">Unsaved changes</span>
             <button class="btn btn-primary" onclick="mixApply()" id="mix-relaunch-btn">
-              <span class="material-icons-round" style="font-size:15px">check</span>Apply
+              <span class="material-icons-round" style="font-size:15px">check</span>Apply and save
             </button>
           </div>
         </div>
@@ -431,7 +432,7 @@ window.DEFAULT_THEME = 'dark';
           <div class="st-sec">Window</div>
           <div class="sc">
             <div class="sr">
-              <div class="sr-left"><div class="sr-label">Hide to system tray</div><div class="sr-desc">Keeps Vanta Manager running when you close it.</div>
+              <div class="sr-left"><div class="sr-label">Hide to system tray</div>
                 <div class="sr-more"><div>Running accounts stay up. Click the tray icon to reopen the window, or right-click it to quit.</div></div></div>
               <label class="toggle"><input type="checkbox" id="set-hidetotray" onchange="toggleHideToTray()"/><span class="toggle-trk"></span></label>
             </div>
@@ -439,7 +440,7 @@ window.DEFAULT_THEME = 'dark';
           <div class="st-sec">Multi-instance</div>
           <div class="sc">
             <div class="sr">
-              <div class="sr-left"><div class="sr-label">Multiple Roblox instances</div><div class="sr-desc">One client per account, side by side.</div>
+              <div class="sr-left"><div class="sr-label">Multiple Roblox instances</div>
                 <div class="sr-more"><div>Holds Roblox's single-client lock so several clients can run at once. Turning this off releases it, and Roblox goes back to allowing one client.</div></div></div>
               <label class="toggle"><input type="checkbox" id="set-multiinstance" checked onchange="toggleMultiInstance()"/><span class="toggle-trk"></span></label>
             </div>
@@ -475,7 +476,7 @@ window.DEFAULT_THEME = 'dark';
               <label class="toggle"><input type="checkbox" id="set-preview" onchange="togglePreview()"/><span class="toggle-trk"></span></label>
             </div>
             <div class="sr">
-              <div class="sr-left"><div class="sr-label">Relaunch on disconnect</div><div class="sr-desc">Puts a disconnected client back in its game.</div>
+              <div class="sr-left"><div class="sr-label">Relaunch on disconnect</div>
                 <div class="sr-more"><div>If a running instance disconnects unexpectedly, the same account is relaunched into the same game.</div></div></div>
               <label class="toggle"><input type="checkbox" id="set-autorelaunch" onchange="toggleAutoRelaunch()"/><span class="toggle-trk"></span></label>
             </div>
@@ -487,33 +488,106 @@ window.DEFAULT_THEME = 'dark';
           </div>
         </div>
         <div class="sw st" id="stab-panel-performance" style="display:none">
-          <div class="st-sec">Memory</div>
-          <div class="sc">
-            <div class="sr">
-              <div class="sr-left"><div class="sr-label">Trim RAM</div><div class="sr-desc">Frees idle memory from every running instance.</div>
-                <div class="sr-more"><div>Only memory the game isn't using is released, so nothing is closed or slowed down.</div></div></div>
-              <button class="btn btn-ghost" onclick="mixTrimMemory('set-trim-btn')" id="set-trim-btn"><span class="material-icons-round" style="font-size:15px">memory</span>Trim now</button>
-            </div>
-            <div class="sr">
-              <div class="sr-left"><div class="sr-label">Auto trim</div><div class="sr-desc">Trims running instances on a timer.</div></div>
-              <label class="toggle"><input type="checkbox" id="set-autotrim" onchange="toggleAutoTrim()"/><span class="toggle-trk"></span></label>
-            </div>
-            <div class="sr">
-              <div class="sr-left"><div class="sr-label">Trim interval</div><div class="sr-desc">How often auto trim runs.</div></div>
-              <span class="sr-num"><input type="number" class="sr-input" id="set-autotrim-interval" min="1" max="30" step="1" value="5" aria-label="Trim interval in minutes" onchange="autoTrimIntervalCommit()"/><span class="sr-unit">min</span></span>
-            </div>
-            <div class="sr">
-              <div class="sr-left"><div class="sr-label">RAM limit per instance</div><div class="sr-desc">Caps the RAM each client can hold.</div>
-                <div class="sr-more"><div>Anything above the cap is paged to disk, so the game keeps running, but too low a cap makes it stutter. 512 MB is the lowest cap; leave it empty for no limit. Applies to running clients right away, and Edit account can override it per account.</div></div></div>
-              <span class="sr-num"><input type="number" class="sr-input" id="set-ramlimit" min="0" max="16384" step="256" placeholder="Off" aria-label="RAM limit per instance in MB" onchange="ramLimitCommit()"/><span class="sr-unit">MB</span></span>
-            </div>
-          </div>
           <div class="st-sec">CPU</div>
           <div class="sc">
+            <div class="sr">
+              <div class="sr-left"><div class="sr-label">Adaptive limits</div><div class="sr-desc">Limits clients that aren't in front.</div>
+                <div class="sr-more"><div>The client you are using keeps all the speed it needs. The others, the ones in the background, get the limits below. Nothing is paused or closed, a limited client just gets less time on the CPU.</div></div></div>
+              <label class="toggle"><input type="checkbox" id="set-adaptive" onchange="perfToggle('adaptiveLimits','set-adaptive')"/><span class="toggle-trk"></span></label>
+            </div>
+            <div class="sr-sub" id="sub-adaptive"><div class="sr-sub-in"><div class="sr-sub-card">
+              <div class="sr-sub-title">In the background</div>
+              <div class="sr-sub-grid">
+                <div class="sr-sub-field"><span class="sr-sub-label">CPU limit</span>
+                  <div class="gv-seg mini" id="seg-bgcpu">
+                    <button type="button" data-v="0" onclick="perfSeg('bgCpuLimit',0)">Off</button>
+                    <button type="button" data-v="50" onclick="perfSeg('bgCpuLimit',50)">50%</button>
+                    <button type="button" data-v="25" onclick="perfSeg('bgCpuLimit',25)">25%</button>
+                    <button type="button" data-v="10" onclick="perfSeg('bgCpuLimit',10)">10%</button>
+                    <button type="button" data-v="5" onclick="perfSeg('bgCpuLimit',5)">5%</button>
+                  </div></div>
+                <div class="sr-sub-field"><span class="sr-sub-label">Efficiency mode</span>
+                  <label class="toggle"><input type="checkbox" id="set-bgeco" onchange="perfToggle('bgEfficiency','set-bgeco')"/><span class="toggle-trk"></span></label></div>
+                <div class="sr-sub-field"><span class="sr-sub-label">Trim memory every</span>
+                  <div class="gv-seg mini" id="seg-bgtrim">
+                    <button type="button" data-v="0" onclick="perfSeg('bgTrimMin',0)">Off</button>
+                    <button type="button" data-v="5" onclick="perfSeg('bgTrimMin',5)">5m</button>
+                    <button type="button" data-v="15" onclick="perfSeg('bgTrimMin',15)">15m</button>
+                    <button type="button" data-v="30" onclick="perfSeg('bgTrimMin',30)">30m</button>
+                    <button type="button" data-v="60" onclick="perfSeg('bgTrimMin',60)">60m</button>
+                  </div></div>
+              </div>
+              <div class="sr-sub-note">The CPU limit is a share of your whole CPU. Efficiency mode asks Windows to run background clients on the cheapest cores at a lower speed.</div>
+            </div></div></div>
+            <div class="sr">
+              <div class="sr-left"><div class="sr-label">Fair CPU cap</div><div class="sr-desc">Each client's cap shrinks as more run.</div>
+                <div class="sr-more"><div>Splits the CPU evenly: with 2 clients running each may use up to half of it, with 4 a quarter, and never less than 5%. One client alone isn't capped.</div></div></div>
+              <label class="toggle"><input type="checkbox" id="set-fair" onchange="perfToggle('fairCpuCap','set-fair')"/><span class="toggle-trk"></span></label>
+            </div>
+            <div class="sr">
+              <div class="sr-left"><div class="sr-label">Spread clients over CPU cores</div>
+                <div class="sr-more"><div>Stops every client from piling onto the same cores. They get their own share of the cores, and when there are more clients than cores, one core each in turn. A single client can use all of them.</div></div></div>
+              <label class="toggle"><input type="checkbox" id="set-spread" onchange="perfToggle('spreadCores','set-spread')"/><span class="toggle-trk"></span></label>
+            </div>
             <div class="sr">
               <div class="sr-left"><div class="sr-label">Lower priority when several run</div><div class="sr-desc">Leaves more CPU for the rest of your PC.</div>
                 <div class="sr-more"><div>Once more than one account is running, every client drops to Below Normal priority so Windows doesn't split the CPU evenly across idle clients. Goes back to Normal when one is left.</div></div></div>
               <label class="toggle"><input type="checkbox" id="set-lowpriority" onchange="toggleLowPriority()"/><span class="toggle-trk"></span></label>
+            </div>
+          </div>
+          <div class="st-sec st-sec-row"><span class="st-sec-t">Memory</span>
+            <button class="btn btn-ghost" onclick="mixTrimMemory('set-trim-btn')" id="set-trim-btn" title="Release unused memory from every running client now"><span class="material-icons-round" style="font-size:15px">memory</span>Trim now</button>
+          </div>
+          <div class="sc">
+            <div class="sr">
+              <div class="sr-left"><div class="sr-label">Trim memory every</div>
+                <div class="sr-more"><div>Only memory the game isn't using is released, so nothing is closed or slowed down. The Trim now button at the top of this section does it once, right away.</div></div></div>
+              <span class="sr-num">
+                <input type="number" class="sr-input" id="set-autotrim-interval" min="1" max="30" step="1" value="5" aria-label="Trim interval in minutes" onchange="autoTrimIntervalCommit()"/><span class="sr-unit">min</span>
+                <label class="toggle"><input type="checkbox" id="set-autotrim" onchange="toggleAutoTrim()"/><span class="toggle-trk"></span></label>
+              </span>
+            </div>
+            <div class="sr">
+              <div class="sr-left"><div class="sr-label">RAM limit per instance</div>
+                <div class="sr-more"><div>Anything above the cap is paged to disk, so the game keeps running, but too low a cap makes it stutter. 512 MB is the lowest cap; leave it empty for no limit. Applies to running clients right away, and Edit account can override it per account.</div></div></div>
+              <span class="sr-num"><input type="number" class="sr-input" id="set-ramlimit" min="0" max="16384" step="256" placeholder="Off" aria-label="RAM limit per instance in MB" onchange="ramLimitCommit()"/><span class="sr-unit">MB</span></span>
+            </div>
+            <div class="sr">
+              <div class="sr-left"><div class="sr-label">Throttle on high memory</div>
+                <div class="sr-more"><div>When a client grows past this size it is held to the CPU limit below until it shrinks again, which also slows how fast it can keep growing. It lets go once the client is 10% under the size. Clients still loading are left alone.</div></div></div>
+              <span class="sr-num">
+                <input type="number" class="sr-input" id="set-throttle-mb" min="512" max="65536" step="256" value="4096" aria-label="Throttle above this memory size in MB" onchange="perfNum('throttleMemMb','set-throttle-mb',4096)"/><span class="sr-unit">MB</span>
+                <label class="toggle"><input type="checkbox" id="set-throttle" onchange="perfToggle('throttleHighMem','set-throttle')"/><span class="toggle-trk"></span></label>
+              </span>
+            </div>
+            <div class="sr-sub" id="sub-throttle"><div class="sr-sub-in"><div class="sr-sub-card sr-sub-line">
+              <div class="sr-sub-title">Throttle CPU limit</div>
+              <div class="gv-seg mini" id="seg-thrcpu">
+                <button type="button" data-v="25" onclick="perfSeg('throttleCpu',25)">25%</button>
+                <button type="button" data-v="10" onclick="perfSeg('throttleCpu',10)">10%</button>
+                <button type="button" data-v="5" onclick="perfSeg('throttleCpu',5)">5%</button>
+                <button type="button" data-v="2" onclick="perfSeg('throttleCpu',2)">2%</button>
+              </div>
+            </div></div></div>
+            <div class="sr">
+              <div class="sr-left"><div class="sr-label">Restart on high memory</div><div class="sr-desc">Disconnects and relaunches a client past this size.</div>
+                <div class="sr-more"><div>A client that stays over this size is closed and started again in its game, so a leak can't grow forever. It has to stay over for a few seconds, a client is restarted at most once every 10 minutes, and one that is still loading is left alone. The account needs its cookie saved, as for any launch.</div></div></div>
+              <span class="sr-num">
+                <input type="number" class="sr-input" id="set-restart-mb" min="512" max="65536" step="256" value="6144" aria-label="Restart above this memory size in MB" onchange="perfNum('restartMemMb','set-restart-mb',6144)"/><span class="sr-unit">MB</span>
+                <label class="toggle"><input type="checkbox" id="set-restart" onchange="perfToggle('restartHighMem','set-restart')"/><span class="toggle-trk"></span></label>
+              </span>
+            </div>
+          </div>
+          <div class="st-sec">Network</div>
+          <div class="sc">
+            <div class="sr">
+              <div class="sr-left"><div class="sr-label">Bandwidth limit</div>
+                <div class="sr-more"><div>Caps outbound (upload) traffic only, for all Roblox clients together, as a Windows QoS policy. Applying needs admin rights (Windows asks each time) and lasts until Windows restarts.</div></div></div>
+              <span class="sr-num">
+                <button class="btn btn-ghost" id="bw-apply" onclick="bwApply()">Apply (admin)</button>
+                <input type="number" class="sr-input" id="set-bw-kbps" min="64" max="10000000" step="100" value="1000" aria-label="Upload limit in kilobits per second" onchange="bwKbpsCommit()"/><span class="sr-unit">kbit/s</span>
+                <label class="toggle"><input type="checkbox" id="set-bw-on" aria-label="Limit upload"/><span class="toggle-trk"></span></label>
+              </span>
             </div>
           </div>
           <div class="st-sec">Windows</div>
@@ -527,7 +601,7 @@ window.DEFAULT_THEME = 'dark';
           <div class="st-sec">Graphics</div>
           <div class="sc">
             <div class="sr">
-              <div class="sr-left"><div class="sr-label">Graphics API</div><div class="sr-desc">Which renderer Roblox uses.</div>
+              <div class="sr-left"><div class="sr-label">Graphics API</div>
                 <div class="sr-more"><div>Automatic lets Roblox pick. Applies from the next launch.</div></div></div>
               <div class="cdd" id="cdd-rendereng">
                 <div class="cdd-trigger" id="cdd-rendereng-trigger" onclick="toggleCdd('rendereng')" role="button" tabindex="0" aria-label="Rendering engine">
@@ -554,46 +628,53 @@ window.DEFAULT_THEME = 'dark';
                 </div>
               </div>
             </div>
+          </div>
+          <div class="st-sec">Advanced graphics</div>
+          <div class="sc">
             <div class="sr">
-              <div class="sr-left"><div class="sr-label">Advanced graphics</div><div class="sr-desc">Turns on the graphics flags below for every account. Uses much less GPU memory.</div>
-                <div class="sr-more"><div>Applies from the next launch. Turning it off takes the flags out again, so Roblox goes back to its own settings. An account can still be set to always or never use it in Edit account, Performance.</div></div></div>
-              <label class="toggle"><input type="checkbox" id="set-advgfx" onchange="agSet({ on: this.checked })"/><span class="toggle-trk"></span></label>
-            </div>
-            <div class="sr-group" id="ag-group">
-              <div class="sr">
-                <div class="sr-left"><div class="sr-label">Anti-aliasing (MSAA)</div><div class="sr-desc">Lower is faster, but edges look jagged.</div></div>
+              <div class="sr-left"><div class="sr-label">Anti-aliasing</div></div>
                 <div class="cdd" id="cdd-agmsaa">
                   <div class="cdd-trigger" id="cdd-agmsaa-trigger" onclick="toggleCdd('agmsaa')" role="button" tabindex="0" aria-label="Anti-aliasing">
-                    <span class="cdd-label" id="cdd-agmsaa-label">x1</span>
+                    <span class="cdd-label" id="cdd-agmsaa-label">Default</span>
                     <span class="material-icons-round cdd-arrow">expand_more</span>
                   </div>
                   <div class="cdd-menu" id="cdd-agmsaa-menu">
-                    <div class="cdd-option" data-value="1" onclick="agSet({ msaa: 1 })" role="button" tabindex="0"><div class="cdd-opt-left"><div class="cdd-opt-name">x1</div><div class="cdd-opt-desc">No smoothing, fastest</div></div></div>
-                    <div class="cdd-option" data-value="2" onclick="agSet({ msaa: 2 })" role="button" tabindex="0"><div class="cdd-opt-left"><div class="cdd-opt-name">x2</div><div class="cdd-opt-desc">Light smoothing</div></div></div>
-                    <div class="cdd-option" data-value="4" onclick="agSet({ msaa: 4 })" role="button" tabindex="0"><div class="cdd-opt-left"><div class="cdd-opt-name">x4</div><div class="cdd-opt-desc">Smooth edges</div></div></div>
-                    <div class="cdd-option" data-value="8" onclick="agSet({ msaa: 8 })" role="button" tabindex="0"><div class="cdd-opt-left"><div class="cdd-opt-name">x8</div><div class="cdd-opt-desc">Smoothest, slowest</div></div></div>
+                    <div class="cdd-option" data-value="default" onclick="agSet({ msaa: 'default' })" role="button" tabindex="0"><div class="cdd-opt-left"><div class="cdd-opt-name">Default</div><div class="cdd-opt-desc">Roblox's choice</div></div><span class="material-icons-round cdd-check">check</span></div>
+                    <div class="cdd-option" data-value="1" onclick="agSet({ msaa: 1 })" role="button" tabindex="0"><div class="cdd-opt-left"><div class="cdd-opt-name">x1</div></div><span class="material-icons-round cdd-check">check</span></div>
+                    <div class="cdd-option" data-value="2" onclick="agSet({ msaa: 2 })" role="button" tabindex="0"><div class="cdd-opt-left"><div class="cdd-opt-name">x2</div></div><span class="material-icons-round cdd-check">check</span></div>
+                    <div class="cdd-option" data-value="4" onclick="agSet({ msaa: 4 })" role="button" tabindex="0"><div class="cdd-opt-left"><div class="cdd-opt-name">x4</div></div><span class="material-icons-round cdd-check">check</span></div>
+                    <div class="cdd-option" data-value="8" onclick="agSet({ msaa: 8 })" role="button" tabindex="0"><div class="cdd-opt-left"><div class="cdd-opt-name">x8</div></div><span class="material-icons-round cdd-check">check</span></div>
                   </div>
                 </div>
-              </div>
-              <div class="sr">
-                <div class="sr-left"><div class="sr-label">Texture quality</div><div class="sr-desc">Lower textures use less GPU memory.</div></div>
+            </div>
+            <div class="sr">
+              <div class="sr-left"><div class="sr-label">Texture quality</div></div>
                 <div class="cdd" id="cdd-agtex">
                   <div class="cdd-trigger" id="cdd-agtex-trigger" onclick="toggleCdd('agtex')" role="button" tabindex="0" aria-label="Texture quality">
-                    <span class="cdd-label" id="cdd-agtex-label">Lowest</span>
+                    <span class="cdd-label" id="cdd-agtex-label">Default</span>
                     <span class="material-icons-round cdd-arrow">expand_more</span>
                   </div>
                   <div class="cdd-menu" id="cdd-agtex-menu">
-                    <div class="cdd-option" data-value="0" onclick="agSet({ texture: 0 })" role="button" tabindex="0"><div class="cdd-opt-left"><div class="cdd-opt-name">Lowest</div><div class="cdd-opt-desc">Least GPU memory</div></div></div>
-                    <div class="cdd-option" data-value="1" onclick="agSet({ texture: 1 })" role="button" tabindex="0"><div class="cdd-opt-left"><div class="cdd-opt-name">Low</div><div class="cdd-opt-desc">Slightly sharper</div></div></div>
-                    <div class="cdd-option" data-value="2" onclick="agSet({ texture: 2 })" role="button" tabindex="0"><div class="cdd-opt-left"><div class="cdd-opt-name">Medium</div><div class="cdd-opt-desc">Balanced</div></div></div>
-                    <div class="cdd-option" data-value="3" onclick="agSet({ texture: 3 })" role="button" tabindex="0"><div class="cdd-opt-left"><div class="cdd-opt-name">High</div><div class="cdd-opt-desc">Full detail</div></div></div>
+                    <div class="cdd-option" data-value="default" onclick="agSet({ texture: 'default' })" role="button" tabindex="0"><div class="cdd-opt-left"><div class="cdd-opt-name">Default</div><div class="cdd-opt-desc">Roblox's choice</div></div><span class="material-icons-round cdd-check">check</span></div>
+                    <div class="cdd-option" data-value="0" onclick="agSet({ texture: 0 })" role="button" tabindex="0"><div class="cdd-opt-left"><div class="cdd-opt-name">Lowest</div></div><span class="material-icons-round cdd-check">check</span></div>
+                    <div class="cdd-option" data-value="1" onclick="agSet({ texture: 1 })" role="button" tabindex="0"><div class="cdd-opt-left"><div class="cdd-opt-name">Low</div></div><span class="material-icons-round cdd-check">check</span></div>
+                    <div class="cdd-option" data-value="2" onclick="agSet({ texture: 2 })" role="button" tabindex="0"><div class="cdd-opt-left"><div class="cdd-opt-name">Medium</div></div><span class="material-icons-round cdd-check">check</span></div>
+                    <div class="cdd-option" data-value="3" onclick="agSet({ texture: 3 })" role="button" tabindex="0"><div class="cdd-opt-left"><div class="cdd-opt-name">High</div></div><span class="material-icons-round cdd-check">check</span></div>
                   </div>
                 </div>
-              </div>
-              <div class="sr">
-                <div class="sr-left"><div class="sr-label">Hide grass</div><div class="sr-desc">Skips drawing grass on terrain.</div></div>
-                <label class="toggle"><input type="checkbox" id="set-ag-grass" onchange="agSet({ grass: this.checked })"/><span class="toggle-trk"></span></label>
-              </div>
+            </div>
+            <div class="sr">
+              <div class="sr-left"><div class="sr-label">Grass</div></div>
+                <div class="cdd" id="cdd-aggrass">
+                  <div class="cdd-trigger" id="cdd-aggrass-trigger" onclick="toggleCdd('aggrass')" role="button" tabindex="0" aria-label="Grass">
+                    <span class="cdd-label" id="cdd-aggrass-label">Default</span>
+                    <span class="material-icons-round cdd-arrow">expand_more</span>
+                  </div>
+                  <div class="cdd-menu" id="cdd-aggrass-menu">
+                    <div class="cdd-option" data-value="default" onclick="agSet({ grass: 'default' })" role="button" tabindex="0"><div class="cdd-opt-left"><div class="cdd-opt-name">Default</div><div class="cdd-opt-desc">Roblox's choice</div></div><span class="material-icons-round cdd-check">check</span></div>
+                    <div class="cdd-option" data-value="hidden" onclick="agSet({ grass: 'hidden' })" role="button" tabindex="0"><div class="cdd-opt-left"><div class="cdd-opt-name">Hidden</div></div><span class="material-icons-round cdd-check">check</span></div>
+                  </div>
+                </div>
             </div>
           </div>
         </div>
@@ -601,8 +682,9 @@ window.DEFAULT_THEME = 'dark';
           <div class="st-sec">Install</div>
           <div class="sc">
             <div class="sr">
-              <div class="sr-left"><div class="sr-label">Roblox install</div><div class="sr-desc" id="install-desc">Vanilla Roblox or a bootstrapper.</div>
+              <div class="sr-left"><div class="sr-label">Roblox install</div><div class="sr-desc"><span id="install-desc">Looking for installs…</span></div>
                 <div class="sr-more"><div>Bloxstrap, Fishstrap, Froststrap and Voidstrap are found too. Auto picks the install that has Roblox's current version.</div></div></div>
+              <button class="btn btn-ghost" id="install-rescan" onclick="installsInit(true, true)" title="Look for Roblox installs again" aria-label="Rescan for Roblox installs"><span class="material-icons-round" style="font-size:17px">refresh</span></button>
               <div class="cdd cdd-wide" id="cdd-install">
                 <div class="cdd-trigger" id="cdd-install-trigger" onclick="toggleCdd('install')" role="button" tabindex="0" aria-label="Roblox install">
                   <span class="cdd-label" id="cdd-install-label">Auto</span>
@@ -1025,8 +1107,7 @@ window.DEFAULT_THEME = 'dark';
         <label>Advanced graphics</label>
         <div class="gv-seg edit-win-seg" id="in-launch-adv">
           <button type="button" data-v="" onclick="setEditAdv('')">Same as Settings</button>
-          <button type="button" data-v="on" onclick="setEditAdv('on')">On</button>
-          <button type="button" data-v="off" onclick="setEditAdv('off')">Off</button>
+          <button type="button" data-v="default" onclick="setEditAdv('default')">Roblox default</button>
         </div>
       </div>
     </div>

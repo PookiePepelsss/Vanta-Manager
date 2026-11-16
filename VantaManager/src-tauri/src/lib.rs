@@ -37,6 +37,9 @@ pub fn run() {
             // GlobalBasicSettings_13.xml on exit) or another tool overwrites it.
             fps::start_guard(&handle);
 
+            // CPU caps, core spreading and memory throttling for running clients.
+            native::start_governor(&handle);
+
             // Best-effort cleanup of orphaned login-profile temp dirs from a
             // crash or force-kill mid-login (see sweep_stale_login_profiles).
             // Blocking I/O, kept off the async runtime's worker threads.
@@ -172,11 +175,14 @@ pub fn run() {
             commands::fflag_read,
             commands::fflag_write,
             commands::roblox_list_installs,
+            commands::roblox_rescan_installs,
             commands::roblox_set_account_ram_limit,
             commands::roblox_memory_usage,
             commands::system_stats,
             commands::roblox_layout,
             commands::roblox_previews,
+            commands::bandwidth_status,
+            commands::bandwidth_apply,
             commands::fps_read,
             commands::fps_write,
             commands::roblox_validate_cookie,
@@ -251,6 +257,8 @@ pub fn run() {
                     // kill, where none of this code runs at all.
                     let state = app_handle.state::<AppState>();
                     helper::shutdown_blocking(&state);
+                    // Clients keep running after us, so they must not keep our limits.
+                    native::release_governor();
                 }
                 _ => {}
             }

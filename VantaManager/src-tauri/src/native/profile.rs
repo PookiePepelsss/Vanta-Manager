@@ -10,9 +10,8 @@
 //
 // Custom FFlags are limited to Roblox's allowlist (anything else is ignored by
 // the client since September 2025, so offering it would only mislead). Each
-// one applies to every account or to chosen accounts. Flags for every account
-// are kept in the file itself, so a Roblox started outside the app gets them
-// too; flags for chosen accounts only exist in the file while those launch.
+// one applies to every account, and is kept in the file itself, so a Roblox
+// started outside the app gets them too.
 use crate::state::AppState;
 use crate::storage::{self, account_id as id_of};
 use serde_json::{json, Map, Value};
@@ -67,10 +66,12 @@ const WINDOW_KEY: &str = "launchWindow";
 /// Settings > Performance > Hide Roblox windows: accounts left on "Default"
 /// launch hidden while it's on.
 pub const HIDE_KEY: &str = "hideWindows";
-/// An account's own Advanced graphics choice: "on", "off", or missing for
-/// whatever Settings says.
+/// An account's own Advanced graphics choice: "default" to use Roblox's own
+/// choices, or missing for whatever Settings says. An older "off" means the
+/// same as "default", and an older "on" the same as missing.
 const ADV_KEY: &str = "launchAdvGfx";
-/// The Advanced graphics settings (the switch and its options). Saved under
+/// The Advanced graphics settings: anti-aliasing, texture quality and grass,
+/// each either a value or "default", which is Roblox's own choice. Saved under
 /// the older name before the rename, so that is read too.
 const ADV_SETTING: &str = "advancedGraphics";
 const ADV_SETTING_OLD: &str = "lighterRendering";
@@ -116,16 +117,16 @@ pub fn coerce(name: &str, value: &Value) -> Option<String> {
         .then(|| (n as i64).to_string())
 }
 
-/// One custom flag: its value, and the accounts it's for (None = all).
+/// One custom flag and its value. It applies to every account.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
     pub name: String,
     pub value: String,
-    pub accounts: Option<Vec<String>>,
 }
 
 /// The saved list, minus anything that isn't an allowlisted custom flag with
-/// a valid value. A later entry for the same flag and scope replaces an earlier one.
+/// a valid value. A later entry for the same flag replaces an earlier one. An
+/// old per-account limit ("accounts") is ignored: every flag is for everyone now.
 pub fn parse_entries(v: Option<&Value>) -> Vec<Entry> {
     let mut out: Vec<Entry> = Vec::new();
     for e in v.and_then(Value::as_array).into_iter().flatten() {
@@ -134,28 +135,15 @@ pub fn parse_entries(v: Option<&Value>) -> Vec<Entry> {
             continue;
         }
         let Some(value) = e.get("value").and_then(|v| coerce(name, v)) else { continue };
-        let accounts = e.get("accounts").and_then(Value::as_array).map(|a| {
-            a.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<_>>()
-        });
-        let accounts = accounts.filter(|a| !a.is_empty());
-        out.retain(|x| !(x.name == name && x.accounts == accounts));
-        out.push(Entry { name: name.into(), value, accounts });
+        out.retain(|x| x.name != name);
+        out.push(Entry { name: name.into(), value });
     }
     out
 }
 
-fn entries() -> Vec<Entry> {
-    parse_entries(crate::settings::snapshot().get(CUSTOM_KEY))
-}
-
 fn entries_to_value(list: &[Entry]) -> Value {
     Value::Array(
-        list.iter()
-            .map(|e| match &e.accounts {
-                Some(a) => json!({ "name": e.name, "value": e.value, "accounts": a }),
-                None => json!({ "name": e.name, "value": e.value }),
-            })
-            .collect(),
+        list.iter().map(|e| json!({ "name": e.name, "value": e.value })).collect(),
     )
 }
 
@@ -214,7 +202,7 @@ pub fn write_flags(flags: &Map<String, Value>) -> bool {
 }
 
 /// Saves the custom list and brings the file's shared flags in line with it:
-/// every custom flag comes out, then the ones for all accounts go back in.
+/// every custom flag comes out, then the saved ones go back in.
 pub fn save_custom(list: &Value) -> Result<Value, String> {
     let clean = parse_entries(Some(list));
     let stored = entries_to_value(&clean);
@@ -223,13 +211,23 @@ pub fn save_custom(list: &Value) -> Result<Value, String> {
     })?;
     let mut flags = read_flags();
     flags.retain(|k, _| !is_custom_flag(k));
-    for e in clean.iter().filter(|e| e.accounts.is_none()) {
+    for e in &clean {
         flags.insert(e.name.clone(), Value::String(e.value.clone()));
     }
     if !write_flags(&flags) && crate::native::get_fflag_path().is_some() {
         return Err("Could not write Roblox's FFlag file".into());
     }
     Ok(stored)
+}
+
+/// Flags saved back when they could be limited to chosen accounts: the limit is
+/// gone, so the list is saved again without it and every flag lands in the file.
+pub fn migrate_scopes() {
+    let raw = crate::settings::snapshot().get(CUSTOM_KEY).cloned();
+    let Some(raw) = raw else { return };
+    if raw.as_array().is_some_and(|a| a.iter().any(|e| e.get("accounts").is_some())) {
+        let _ = save_custom(&raw);
+    }
 }
 
 /// The allowlist for the UI, without the flags the Mixer owns.
@@ -256,21 +254,49 @@ fn adv_config() -> Value {
     s.get(ADV_SETTING).or_else(|| s.get(ADV_SETTING_OLD)).cloned().unwrap_or(Value::Null)
 }
 
-fn adv_on(cfg: &Value) -> bool {
-    cfg.get("on").and_then(Value::as_bool).unwrap_or(false)
+/// What the three options ask for; None / false is Roblox's own choice.
+struct Adv {
+    msaa: Option<i64>,
+    texture: Option<i64>,
+    hide_grass: bool,
 }
 
-/// The flags Advanced graphics writes with these options (the same ones the
-/// Settings page writes for every account).
+fn adv_options(cfg: &Value) -> Adv {
+    let msaa_of = |v: Option<&Value>| v.and_then(Value::as_i64).filter(|n| [1, 2, 4, 8].contains(n));
+    let texture_of = |v: Option<&Value>| v.and_then(Value::as_i64).filter(|n| (0..=3).contains(n));
+    // Saved while there was still one switch for all three: off meant nothing
+    // was set, on meant every option was, with these as the starting values.
+    if let Some(on) = cfg.get("on").and_then(Value::as_bool) {
+        if !on {
+            return Adv { msaa: None, texture: None, hide_grass: false };
+        }
+        return Adv {
+            msaa: Some(msaa_of(cfg.get("msaa")).unwrap_or(1)),
+            texture: Some(texture_of(cfg.get("texture")).unwrap_or(0)),
+            hide_grass: cfg.get("grass").and_then(Value::as_bool).unwrap_or(true),
+        };
+    }
+    Adv {
+        msaa: msaa_of(cfg.get("msaa")),
+        texture: texture_of(cfg.get("texture")),
+        hide_grass: cfg.get("grass").and_then(Value::as_str) == Some("hidden"),
+    }
+}
+
+/// The flags the chosen options write, and only those: an option left on
+/// Roblox's choice writes nothing (the same ones the Settings page writes for
+/// every account).
 fn adv_flags(cfg: &Value) -> Map<String, Value> {
-    let msaa = cfg.get("msaa").and_then(Value::as_i64).filter(|n| [1, 2, 4, 8].contains(n)).unwrap_or(1);
-    let texture = cfg.get("texture").and_then(Value::as_i64).filter(|n| (0..=3).contains(n)).unwrap_or(0);
-    let grass = cfg.get("grass").and_then(Value::as_bool).unwrap_or(true);
+    let o = adv_options(cfg);
     let mut m = Map::new();
-    m.insert("FIntDebugForceMSAASamples".into(), Value::String(msaa.to_string()));
-    m.insert("DFFlagTextureQualityOverrideEnabled".into(), Value::String("True".into()));
-    m.insert("DFIntTextureQualityOverride".into(), Value::String(texture.to_string()));
-    if grass {
+    if let Some(msaa) = o.msaa {
+        m.insert("FIntDebugForceMSAASamples".into(), Value::String(msaa.to_string()));
+    }
+    if let Some(texture) = o.texture {
+        m.insert("DFFlagTextureQualityOverrideEnabled".into(), Value::String("True".into()));
+        m.insert("DFIntTextureQualityOverride".into(), Value::String(texture.to_string()));
+    }
+    if o.hide_grass {
         m.insert("FIntFRMMaxGrassDistance".into(), Value::String("0".into()));
         m.insert("FIntFRMMinGrassDistance".into(), Value::String("0".into()));
     }
@@ -340,7 +366,7 @@ fn manually_changed(pid: u32) -> bool {
 
 /// An account's own values: (fps, graphics level, extra flags, window).
 /// In the extra flags, null means "take this one out of the file".
-fn account_values(account: Option<&Value>, list: &[Entry], account_id: &str, adv: &Value, hide_default: bool) -> (Option<i64>, Option<i64>, Map<String, Value>, WindowMode) {
+fn account_values(account: Option<&Value>, adv: &Value, hide_default: bool) -> (Option<i64>, Option<i64>, Map<String, Value>, WindowMode) {
     let num = |k: &str| account.and_then(|a| a.get(k)).and_then(Value::as_f64).filter(|n| n.is_finite());
     let fps = num(FPS_KEY).filter(|n| *n > 0.0).map(crate::fps::normalize);
     let gfx = num(GFX_KEY).map(|n| n.round() as i64).filter(|n| (1..=21).contains(n));
@@ -354,29 +380,16 @@ fn account_values(account: Option<&Value>, list: &[Entry], account_id: &str, adv
         _ => WindowMode::Normal,
     };
     let mut extra = Map::new();
-    for e in list {
-        if e.accounts.as_ref().is_some_and(|a| a.iter().any(|x| x == account_id)) {
-            extra.insert(e.name.clone(), Value::String(e.value.clone()));
-        }
-    }
     if let Some(g) = gfx {
         extra.insert(GFX_FLAG.into(), Value::String(g.to_string()));
     }
-    // Advanced graphics: only an account that differs from Settings needs
+    // Advanced graphics: only an account that wants Roblox's own choices needs
     // anything here, since the shared file already follows Settings.
-    let own_adv = match account.and_then(|a| a.get(ADV_KEY)).and_then(Value::as_str) {
-        Some("on") => Some(true),
-        Some("off") => Some(false),
-        _ => None,
-    };
-    match own_adv {
-        Some(true) if !adv_on(adv) => extra.extend(adv_flags(adv)),
-        Some(false) if adv_on(adv) => {
-            for f in ADV_FLAGS {
-                extra.insert(f.into(), Value::Null);
-            }
+    let own_default = matches!(account.and_then(|a| a.get(ADV_KEY)).and_then(Value::as_str), Some("default" | "off"));
+    if own_default && !adv_flags(adv).is_empty() {
+        for f in ADV_FLAGS {
+            extra.insert(f.into(), Value::Null);
         }
-        _ => {}
     }
     (fps, gfx, extra, window)
 }
@@ -397,9 +410,10 @@ fn restore(gen: u64) {
 
 /// Writes this account's values into Roblox's files, right before its spawn.
 pub async fn prepare(state: &AppState, account_id: &str) -> Prepared {
+    migrate_scopes();
     let accounts = storage::load_accounts(state);
     let account = accounts.iter().find(|a| id_of(a) == Some(account_id));
-    let (fps, _gfx, extra, window) = account_values(account, &entries(), account_id, &adv_config(), crate::settings::get_bool(HIDE_KEY, false));
+    let (fps, _gfx, extra, window) = account_values(account, &adv_config(), crate::settings::get_bool(HIDE_KEY, false));
     let key = format!("{:?}|{}", fps, Value::Object(extra.clone()));
     let own = fps.is_some() || !extra.is_empty();
 
@@ -569,67 +583,98 @@ mod tests {
             { "name": "DFIntCSGLevelOfDetailSwitchingDistance", "value": 0, "accounts": ["a", "b"] },
             { "name": "DFIntCSGLevelOfDetailSwitchingDistance", "value": 5, "accounts": [] },
         ]);
+        // An old per-account limit is ignored; a later entry for a flag replaces an earlier one.
         let got = parse_entries(Some(&list));
         assert_eq!(got, vec![
-            Entry { name: "FFlagDebugSkyGray".into(), value: "True".into(), accounts: None },
-            Entry { name: "DFIntCSGLevelOfDetailSwitchingDistance".into(), value: "0".into(), accounts: Some(vec!["a".into(), "b".into()]) },
-            Entry { name: "DFIntCSGLevelOfDetailSwitchingDistance".into(), value: "5".into(), accounts: None },
+            Entry { name: "FFlagDebugSkyGray".into(), value: "True".into() },
+            Entry { name: "DFIntCSGLevelOfDetailSwitchingDistance".into(), value: "5".into() },
         ]);
     }
 
     #[test]
-    fn an_account_gets_its_own_flags_fps_graphics_and_window() {
-        let list = parse_entries(Some(&json!([
-            { "name": "FFlagDebugSkyGray", "value": true },
-            { "name": "DFIntCSGLevelOfDetailSwitchingDistance", "value": 0, "accounts": ["alt"] },
-        ])));
+    fn an_account_gets_its_own_fps_graphics_and_window() {
         let alt = json!({ "id": "alt", "launchFps": 15, "launchGfx": 1, "launchWindow": "minimized" });
-        let (fps, gfx, extra, window) = account_values(Some(&alt), &list, "alt", &Value::Null, false);
+        let (fps, gfx, extra, window) = account_values(Some(&alt), &Value::Null, false);
         assert_eq!((fps, gfx, window), (Some(15), Some(1), WindowMode::Minimized));
-        assert_eq!(extra.get("DFIntCSGLevelOfDetailSwitchingDistance"), Some(&json!("0")));
         assert_eq!(extra.get(GFX_FLAG), Some(&json!("1")));
-        assert!(extra.get("FFlagDebugSkyGray").is_none(), "shared flags live in the file already");
+        assert_eq!(extra.len(), 1, "custom flags live in the file already");
 
         let hid = json!({ "id": "h", "launchWindow": "hidden" });
-        assert_eq!(account_values(Some(&hid), &list, "h", &Value::Null, false).3, WindowMode::Hidden);
+        assert_eq!(account_values(Some(&hid), &Value::Null, false).3, WindowMode::Hidden);
 
         let main = json!({ "id": "main", "launchFps": 0, "launchGfx": 99 });
-        let (fps, gfx, extra, window) = account_values(Some(&main), &list, "main", &Value::Null, false);
+        let (fps, gfx, extra, window) = account_values(Some(&main), &Value::Null, false);
         assert_eq!((fps, gfx, window), (None, None, WindowMode::Normal));
         assert!(extra.is_empty());
     }
 
     #[test]
-    fn an_account_can_differ_from_advanced_graphics_in_settings() {
-        let on = json!({ "on": true, "msaa": 4, "texture": 2, "grass": false });
-        let off = json!({ "on": false, "msaa": 2 });
-        let wants_on = json!({ "id": "a", "launchAdvGfx": "on" });
-        let wants_off = json!({ "id": "a", "launchAdvGfx": "off" });
+    fn an_account_can_use_roblox_choices_instead_of_advanced_graphics() {
+        let set = json!({ "msaa": 4, "texture": 2, "grass": "hidden" });
+        let nothing_set = json!({ "msaa": "default", "texture": "default", "grass": "default" });
+        let wants_default = json!({ "id": "a", "launchAdvGfx": "default" });
+        let old_off = json!({ "id": "a", "launchAdvGfx": "off" });
+        let old_on = json!({ "id": "a", "launchAdvGfx": "on" });
         let follows = json!({ "id": "a" });
 
-        // Settings off, this account on: the flags come in for its launch.
-        let (_, _, extra, _) = account_values(Some(&wants_on), &[], "a", &off, false);
-        assert_eq!(extra.get("FIntDebugForceMSAASamples"), Some(&json!("2")));
-        assert_eq!(extra.get("DFIntTextureQualityOverride"), Some(&json!("0")));
-        assert_eq!(extra.get("FIntFRMMaxGrassDistance"), Some(&json!("0")), "grass hidden by default");
-
-        // Settings on, this account off: the flags are taken out for its launch.
-        let (_, _, extra, _) = account_values(Some(&wants_off), &[], "a", &on, false);
-        assert_eq!(extra.len(), ADV_FLAGS.len());
-        assert!(extra.values().all(Value::is_null));
-
-        // Same as Settings either way: nothing of its own.
-        for cfg in [&on, &off] {
-            assert!(account_values(Some(&follows), &[], "a", cfg, false).2.is_empty());
+        // Settings chose some options, this account wants Roblox's: the flags
+        // are taken out of the file for its launch.
+        for acct in [&wants_default, &old_off] {
+            let (_, _, extra, _) = account_values(Some(acct), &set, false);
+            assert_eq!(extra.len(), ADV_FLAGS.len());
+            assert!(extra.values().all(Value::is_null));
         }
-        assert!(account_values(Some(&wants_on), &[], "a", &on, false).2.is_empty());
-        assert!(account_values(Some(&wants_off), &[], "a", &off, false).2.is_empty());
 
-        // Options are read from Settings, with the grass switch respected.
-        let (_, _, extra, _) = account_values(Some(&wants_on), &[], "a", &json!({ "on": false, "msaa": 8, "texture": 3, "grass": false }), false);
-        assert_eq!(extra.get("FIntDebugForceMSAASamples"), Some(&json!("8")));
-        assert_eq!(extra.get("DFIntTextureQualityOverride"), Some(&json!("3")));
-        assert!(extra.get("FIntFRMMaxGrassDistance").is_none());
+        // Same as Settings (or an old "on"): nothing of its own.
+        assert!(account_values(Some(&follows), &set, false).2.is_empty());
+        assert!(account_values(Some(&old_on), &set, false).2.is_empty());
+
+        // Settings left everything to Roblox: nothing to take out.
+        assert!(account_values(Some(&wants_default), &nothing_set, false).2.is_empty());
+        assert!(account_values(Some(&wants_default), &Value::Null, false).2.is_empty());
+    }
+
+    #[test]
+    fn an_advanced_graphics_option_left_on_default_writes_nothing() {
+        assert!(adv_flags(&Value::Null).is_empty());
+        assert!(adv_flags(&json!({ "msaa": "default", "texture": "default", "grass": "default" })).is_empty());
+
+        let msaa = adv_flags(&json!({ "msaa": 8 }));
+        assert_eq!(msaa.len(), 1);
+        assert_eq!(msaa.get("FIntDebugForceMSAASamples"), Some(&json!("8")));
+
+        let texture = adv_flags(&json!({ "texture": 1 }));
+        assert_eq!(texture.get("DFFlagTextureQualityOverrideEnabled"), Some(&json!("True")));
+        assert_eq!(texture.get("DFIntTextureQualityOverride"), Some(&json!("1")));
+        assert_eq!(texture.len(), 2);
+
+        let grass = adv_flags(&json!({ "grass": "hidden" }));
+        assert_eq!(grass.get("FIntFRMMaxGrassDistance"), Some(&json!("0")));
+        assert_eq!(grass.get("FIntFRMMinGrassDistance"), Some(&json!("0")));
+        assert_eq!(grass.len(), 2);
+
+        // Texture quality 0 is a real choice (lowest), not "default".
+        assert_eq!(adv_flags(&json!({ "texture": 0 })).get("DFIntTextureQualityOverride"), Some(&json!("0")));
+        // Values that aren't choices are ignored.
+        assert!(adv_flags(&json!({ "msaa": 3, "texture": 9, "grass": "shown" })).is_empty());
+        // All three together write every flag.
+        assert_eq!(adv_flags(&json!({ "msaa": 2, "texture": 3, "grass": "hidden" })).len(), ADV_FLAGS.len());
+    }
+
+    #[test]
+    fn advanced_graphics_saved_with_the_old_switch_still_means_the_same() {
+        // On: the saved options apply, and grass was a yes/no.
+        let on = adv_flags(&json!({ "on": true, "msaa": 4, "texture": 2, "grass": false }));
+        assert_eq!(on.get("FIntDebugForceMSAASamples"), Some(&json!("4")));
+        assert_eq!(on.get("DFIntTextureQualityOverride"), Some(&json!("2")));
+        assert!(on.get("FIntFRMMaxGrassDistance").is_none());
+        // On with nothing else saved: the starting values it always had.
+        let start = adv_flags(&json!({ "on": true }));
+        assert_eq!(start.get("FIntDebugForceMSAASamples"), Some(&json!("1")));
+        assert_eq!(start.get("DFIntTextureQualityOverride"), Some(&json!("0")));
+        assert_eq!(start.get("FIntFRMMaxGrassDistance"), Some(&json!("0")));
+        // Off: nothing, whatever options were left behind.
+        assert!(adv_flags(&json!({ "on": false, "msaa": 8, "texture": 3, "grass": true })).is_empty());
     }
 
     #[test]
@@ -650,7 +695,7 @@ mod tests {
         let empty = json!({ "id": "a", "launchWindow": "" });
         let normal = json!({ "id": "a", "launchWindow": "normal" });
         let small = json!({ "id": "a", "launchWindow": "small" });
-        let win = |a: &Value, hide| account_values(Some(a), &[], "a", &Value::Null, hide).3;
+        let win = |a: &Value, hide| account_values(Some(a), &Value::Null, hide).3;
         assert_eq!(win(&default, true), WindowMode::Hidden);
         assert_eq!(win(&empty, true), WindowMode::Hidden);
         assert_eq!(win(&default, false), WindowMode::Normal);

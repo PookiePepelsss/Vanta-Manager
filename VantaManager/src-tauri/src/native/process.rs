@@ -167,7 +167,7 @@ pub async fn count_roblox_processes(app: &AppHandle, state: &AppState) -> u32 {
 // Just hands idle physical pages back to the OS; doesn't touch the
 // process itself, can't crash it.
 #[cfg(windows)]
-fn trim_process_memory(pid: u32) -> bool {
+pub(super) fn trim_process_memory(pid: u32) -> bool {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::ProcessStatus::EmptyWorkingSet;
     use windows::Win32::System::Threading::{
@@ -184,7 +184,7 @@ fn trim_process_memory(pid: u32) -> bool {
     }
 }
 #[cfg(not(windows))]
-fn trim_process_memory(_pid: u32) -> bool {
+pub(super) fn trim_process_memory(_pid: u32) -> bool {
     false
 }
 

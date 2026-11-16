@@ -5,7 +5,11 @@
 // Froststrap, Voidstrap, Bubblestrap, and whatever ships next) all copy
 // Bloxstrap's layout, %LOCALAPPDATA%\<Name>\Versions\version-*\ with an
 // optional <Name>\Modifications\ overlay, so any folder with that shape is a
-// candidate. Two more sources catch installs that live elsewhere: the
+// candidate. Some forks rename the two folders: Voidstrap keeps its builds in
+// RblxVersions and its overlay in VoidstrapMods. Others keep their data in
+// %APPDATA% (Roaming) rather than %LOCALAPPDATA%: Froststrap 2 installs its
+// exe under Local but its Versions and Modifications under Roaming. All are
+// found the same way. Two more sources catch installs that live elsewhere: the
 // registered roblox-player: protocol handler (whichever bootstrapper the user
 // set as default, wherever it was installed) and the machine-wide vanilla
 // install under Program Files.
@@ -30,11 +34,36 @@ pub struct Root {
     pub is_default: bool,
 }
 
+/// The folders a root may keep its version-* folders in: Bloxstrap and most
+/// forks use Versions, Voidstrap uses RblxVersions.
+const VERSION_DIRS: [&str; 2] = ["Versions", "RblxVersions"];
+
+fn version_dirs(root: &Path) -> Vec<PathBuf> {
+    VERSION_DIRS.iter().map(|n| root.join(n)).filter(|d| d.is_dir()).collect()
+}
+
 impl Root {
     /// Bloxstrap-family overlay that the bootstrapper copies into the version
-    /// folder at each of its own launches.
+    /// folder at each of its own launches: Modifications, or the folder a fork
+    /// names after itself (VoidstrapMods). Modifications is where a new one
+    /// would be made when neither exists yet.
     fn modifications(&self) -> Option<PathBuf> {
-        (!self.vanilla).then(|| self.path.join("Modifications"))
+        if self.vanilla {
+            return None;
+        }
+        let plain = self.path.join("Modifications");
+        if plain.is_dir() {
+            return Some(plain);
+        }
+        let named = std::fs::read_dir(&self.path).ok().and_then(|entries| {
+            entries.flatten().map(|e| e.path()).find(|p| {
+                p.is_dir()
+                    && p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.len() > 4 && n.to_ascii_lowercase().ends_with("mods"))
+            })
+        });
+        Some(named.unwrap_or(plain))
     }
 }
 
@@ -59,6 +88,40 @@ fn local_appdata() -> Option<PathBuf> {
         .or_else(|| {
             std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join("AppData").join("Local"))
         })
+}
+
+fn roaming_appdata() -> Option<PathBuf> {
+    std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("USERPROFILE")
+                .map(|h| PathBuf::from(h).join("AppData").join("Roaming"))
+        })
+}
+
+/// The folders directly inside `base` that hold builds. path().is_dir()
+/// follows junctions, which is how people move an install folder to another
+/// drive; file_type() does not.
+fn child_roots(base: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(base)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.is_dir() && !version_dirs(p).is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Where a bootstrapper's builds are when the folder its exe sits in has none:
+/// the folder of the same name under Roaming (Froststrap 2).
+fn data_twin(exe_root: &Path, roaming: Option<&Path>) -> Option<PathBuf> {
+    if !version_dirs(exe_root).is_empty() {
+        return Some(exe_root.to_path_buf());
+    }
+    let twin = roaming?.join(exe_root.file_name()?);
+    (!version_dirs(&twin).is_empty()).then_some(twin)
 }
 
 fn path_key(p: &Path) -> String {
@@ -150,7 +213,7 @@ fn root_of_handler(exe: &Path) -> Option<PathBuf> {
 fn scan_roots() -> Vec<Root> {
     let mut roots: Vec<Root> = Vec::new();
     let push = |path: PathBuf, roots: &mut Vec<Root>| {
-        if !path.join("Versions").is_dir() {
+        if version_dirs(&path).is_empty() {
             return;
         }
         if roots.iter().any(|r| path_key(&r.path) == path_key(&path)) {
@@ -169,15 +232,10 @@ fn scan_roots() -> Vec<Root> {
         });
     };
 
-    if let Some(local) = local_appdata() {
-        if let Ok(entries) = std::fs::read_dir(&local) {
-            for e in entries.flatten() {
-                // path().is_dir() follows junctions, which is how people move
-                // an install folder to another drive; file_type() does not.
-                if e.path().is_dir() {
-                    push(e.path(), &mut roots);
-                }
-            }
+    let roaming = roaming_appdata();
+    for base in [local_appdata(), roaming.clone()].into_iter().flatten() {
+        for dir in child_roots(&base) {
+            push(dir, &mut roots);
         }
     }
     for var in ["ProgramFiles(x86)", "ProgramFiles"] {
@@ -187,7 +245,8 @@ fn scan_roots() -> Vec<Root> {
     }
     let default_root = protocol_handler_command()
         .and_then(|c| command_exe(&c))
-        .and_then(|exe| root_of_handler(&exe));
+        .and_then(|exe| root_of_handler(&exe))
+        .map(|r| data_twin(&r, roaming.as_deref()).unwrap_or(r));
     if let Some(dr) = &default_root {
         push(dr.clone(), &mut roots);
         let key = path_key(dr);
@@ -221,11 +280,10 @@ pub fn roots() -> Vec<Root> {
 const MIN_PLAUSIBLE_EXE_BYTES: u64 = 5_000_000;
 
 fn installs_in(root: &Root) -> Vec<Install> {
-    let Ok(entries) = std::fs::read_dir(root.path.join("Versions")) else {
-        return Vec::new();
-    };
-    let mut out: Vec<Install> = entries
-        .flatten()
+    let mut out: Vec<Install> = version_dirs(&root.path)
+        .into_iter()
+        .filter_map(|d| std::fs::read_dir(d).ok())
+        .flat_map(|entries| entries.flatten().collect::<Vec<_>>())
         .filter(|e| e.file_name().to_string_lossy().starts_with("version-"))
         .filter_map(|e| {
             let dir = e.path();
@@ -444,16 +502,25 @@ fn choose_install(
     handler_dir: Option<&Path>,
     version_of: &dyn Fn(&Install) -> Option<(u32, u32)>,
 ) -> Option<Install> {
-    // Several roots can hold the same build; the newest copy of it wins.
     let newest_where = |list: &[Install], keep: &dyn Fn(&Install) -> bool| {
         list.iter().filter(|i| keep(i)).max_by_key(|i| i.modified).cloned()
     };
+    // Several roots can hold the same live build. A bootstrapper that is
+    // installed was put there on purpose, and plain Roblox often sits beside
+    // it (reinstalled, or left from before), so the bootstrapper's copy wins;
+    // after that the registered one, then the newest.
+    let preferred_where = |list: &[Install], keep: &dyn Fn(&Install) -> bool| {
+        list.iter()
+            .filter(|i| keep(i))
+            .max_by_key(|i| (!i.root.vanilla, i.root.is_default, i.modified))
+            .cloned()
+    };
     if let Some(live) = live {
         for list in [&scoped, &everywhere] {
-            if let Some(i) = newest_where(list, &|i| i.version().eq_ignore_ascii_case(&live.folder)) {
+            if let Some(i) = preferred_where(list, &|i| i.version().eq_ignore_ascii_case(&live.folder)) {
                 return Some(i);
             }
-            if let Some(i) = newest_where(list, &|i| is_current(i, live, version_of)) {
+            if let Some(i) = preferred_where(list, &|i| is_current(i, live, version_of)) {
                 return Some(i);
             }
         }
@@ -661,6 +728,81 @@ mod tests {
         let everywhere = vec![build("Roblox", "version-stale", 100), build("Bloxstrap", "version-live", 300)];
         let p = choose_install(scoped, everywhere, Some(&live("version-live", None)), None, &no_versions).unwrap();
         assert_eq!(p.version(), "version-live");
+    }
+
+    #[test]
+    fn froststrap_two_keeps_its_builds_under_roaming_while_its_exe_sits_under_local() {
+        let base = scratch_dir("frost");
+        let local = base.join("Local");
+        let roaming = base.join("Roaming");
+        std::fs::create_dir_all(local.join("Froststrap")).unwrap(); // the exe's folder, no builds
+        fake_exe(&roaming.join("Froststrap").join("Versions").join("version-abc").join(PLAYER_EXE));
+        std::fs::create_dir_all(roaming.join("SomethingElse")).unwrap(); // not a root
+        // scanning finds it from the Roaming side, and not the exe's own folder
+        assert_eq!(child_roots(&local), Vec::<PathBuf>::new());
+        assert_eq!(child_roots(&roaming), vec![roaming.join("Froststrap")]);
+        // the registered handler's folder has no builds, so its Roaming twin is the root
+        assert_eq!(data_twin(&local.join("Froststrap"), Some(&roaming)), Some(roaming.join("Froststrap")));
+        assert_eq!(data_twin(&local.join("Froststrap"), None), None);
+        // a handler folder that holds its own builds is used as it is
+        assert_eq!(data_twin(&roaming.join("Froststrap"), Some(&roaming)), Some(roaming.join("Froststrap")));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn the_bootstrapper_copy_of_the_live_build_wins_over_plain_roblox() {
+        let mut vanilla = build("Roblox", "version-live", 0); // the newer file
+        vanilla.root.is_default = true;
+        let strap = build("Voidstrap", "version-live", 500);
+        let list = vec![vanilla, strap];
+        let p = pick(list, Some(&live("version-live", None)), None).unwrap();
+        assert_eq!(p.root.name, "Voidstrap");
+    }
+
+    #[test]
+    fn a_stale_bootstrapper_build_is_still_passed_over() {
+        let list = vec![build("Voidstrap", "version-stale", 0), build("Roblox", "version-live", 500)];
+        let p = pick(list, Some(&live("version-live", None)), None).unwrap();
+        assert_eq!(p.root.name, "Roblox");
+    }
+
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("vanta-install-{}-{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn fake_exe(path: &Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let f = std::fs::File::create(path).unwrap();
+        f.set_len(MIN_PLAUSIBLE_EXE_BYTES + 1).unwrap();
+    }
+
+    #[test]
+    fn voidstrap_keeps_its_builds_in_rblxversions_and_its_overlay_in_voidstrapmods() {
+        let root = scratch_dir("voidstrap").join("Voidstrap");
+        fake_exe(&root.join("RblxVersions").join("version-abc").join(PLAYER_EXE));
+        std::fs::create_dir_all(root.join("VoidstrapMods").join("ClientSettings")).unwrap();
+        let r = Root { name: "Voidstrap".into(), path: root.clone(), vanilla: false, is_default: false };
+        assert_eq!(version_dirs(&root).len(), 1);
+        let found = installs_in(&r);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].version(), "version-abc");
+        assert_eq!(r.modifications(), Some(root.join("VoidstrapMods")));
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    #[test]
+    fn bloxstrap_layout_and_a_missing_overlay_still_work() {
+        let root = scratch_dir("bloxstrap").join("Bloxstrap");
+        fake_exe(&root.join("Versions").join("version-abc").join(PLAYER_EXE));
+        let r = Root { name: "Bloxstrap".into(), path: root.clone(), vanilla: false, is_default: false };
+        assert_eq!(installs_in(&r).len(), 1);
+        assert_eq!(r.modifications(), Some(root.join("Modifications")), "made there when absent");
+        let vanilla = Root { name: "Roblox".into(), path: root.clone(), vanilla: true, is_default: false };
+        assert_eq!(vanilla.modifications(), None);
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
     }
 
     /// Reads the builds installed on this machine; run by hand with --ignored.

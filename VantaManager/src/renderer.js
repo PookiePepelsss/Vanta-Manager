@@ -2,6 +2,13 @@ let accounts = [], editAcc = null, toastTimer;
 let packages = [], editingPackageId = null;
 const _launchedIds = new Set();
 
+// Settings > Performance: read by applySettings, which runs during start-up, so these
+// have to exist before the rest of the file does.
+const PERF_DEFAULTS = { adaptiveLimits: false, bgCpuLimit: 25, bgEfficiency: true, bgTrimMin: 0, fairCpuCap: false, spreadCores: false, throttleHighMem: false, throttleMemMb: 4096, throttleCpu: 5, restartHighMem: false, restartMemMb: 6144 };
+const PERF_NAMES = { adaptiveLimits: 'Adaptive limits', bgEfficiency: 'Efficiency mode', fairCpuCap: 'Fair CPU cap', spreadCores: 'Spreading clients over cores', throttleHighMem: 'Throttle on high memory', restartHighMem: 'Restart on high memory' };
+let _mixDirty = false; // the Mixer has changes that Apply and save hasn't written yet
+const PERF_SEGS = { bgCpuLimit: 'seg-bgcpu', bgTrimMin: 'seg-bgtrim', throttleCpu: 'seg-thrcpu' };
+
 // ── Logs ─────────────────────────────────────────────────────────────────────
 const _logs = [];
 const MAX_LOGS = 2000;
@@ -474,8 +481,9 @@ function applySettings() {
   if (hideWin) hideWin.checked = !!settings.hideWindows;
   const ramIv = document.getElementById('set-ramlimit');
   if (ramIv) ramIv.value = Number(settings.ramLimitMb) > 0 ? Number(settings.ramLimitMb) : '';
+  perfPaint();
   agPaint();
-  if (agState().on) agApply(); // the file can be rewritten by a bootstrapper while the app is closed
+  if (agAny()) agApply(); // the file can be rewritten by a bootstrapper while the app is closed
   const relaunch = document.getElementById('set-autorelaunch');
   if (relaunch) relaunch.checked = !!settings.autoRelaunch;
   const lowPriority = document.getElementById('set-lowpriority');
@@ -938,10 +946,104 @@ async function ramLimitCommit() {
   toast(mb ? 'RAM limit: ' + formatMb(mb) + ' per instance' : 'RAM limit off', 'ok');
 }
 
+// ── CPU and memory limits, bandwidth (Settings > Performance) ────────────
+// The backend's governor reads these every couple of seconds, so a change takes
+// effect on running clients by itself; the page only saves the values.
+function perfVal(k) { return settings[k] === undefined ? PERF_DEFAULTS[k] : settings[k]; }
+// The panels under a switch open and close with it.
+function perfSubs() {
+  document.getElementById('sub-adaptive')?.classList.toggle('open', !!perfVal('adaptiveLimits'));
+  document.getElementById('sub-throttle')?.classList.toggle('open', !!perfVal('throttleHighMem'));
+}
+function perfPaint() {
+  const check = (id, key) => { const el = document.getElementById(id); if (el) el.checked = !!perfVal(key); };
+  check('set-adaptive', 'adaptiveLimits'); check('set-bgeco', 'bgEfficiency'); check('set-fair', 'fairCpuCap');
+  check('set-spread', 'spreadCores'); check('set-throttle', 'throttleHighMem'); check('set-restart', 'restartHighMem');
+  const num = (id, key) => { const el = document.getElementById(id); if (el) el.value = perfVal(key); };
+  num('set-throttle-mb', 'throttleMemMb'); num('set-restart-mb', 'restartMemMb');
+  for (const [key, id] of Object.entries(PERF_SEGS)) {
+    const seg = document.getElementById(id);
+    if (!seg) continue;
+    seg.querySelectorAll('button').forEach(b => b.classList.toggle('active', Number(b.dataset.v) === Number(perfVal(key))));
+  }
+  perfSubs();
+  perfSyncSegs();
+}
+// Measured only while visible: a hidden tab has no width to size the highlight to.
+function perfSyncSegs() { Object.values(PERF_SEGS).forEach(id => syncSeg(document.getElementById(id))); }
+function perfToggle(key, id) {
+  const on = document.getElementById(id).checked;
+  settings[key] = on;
+  api.saveSettings({ [key]: on });
+  perfSubs();
+  toast((PERF_NAMES[key] || key) + (on ? ' on' : ' off'), on ? 'ok' : 'err');
+}
+function perfSeg(key, v) {
+  settings[key] = v;
+  api.saveSettings({ [key]: v });
+  const seg = document.getElementById(PERF_SEGS[key]);
+  seg?.querySelectorAll('button').forEach(b => b.classList.toggle('active', Number(b.dataset.v) === v));
+  syncSeg(seg);
+}
+function perfNum(key, id, fallback) {
+  const el = document.getElementById(id);
+  const v = clampField(el, fallback);
+  settings[key] = v;
+  api.saveSettings({ [key]: v });
+  toast((key === 'restartMemMb' ? 'Restart above ' : 'Throttle above ') + formatMb(v), 'ok');
+}
+
+// Windows keeps a limit like this until it restarts, and asks for admin rights
+// each time one is set, so nothing here applies on its own: Apply does.
+let _bw = { active: false };
+// The switch and the value show what is set. A limit Windows cleared on restart is
+// worth saying once, since the switch would otherwise just look off.
+let _bwToldLost = false;
+function bwPaint() {
+  if (_bw.lostOnRestart && !_bwToldLost) { _bwToldLost = true; toast('The upload limit was cleared when Windows restarted', 'err'); }
+}
+async function bwInit() {
+  try { _bw = (await api.getBandwidth()) || { active: false }; } catch { _bw = { active: false }; }
+  const kb = document.getElementById('set-bw-kbps'), on = document.getElementById('set-bw-on');
+  if (kb) kb.value = Number(settings.bandwidthKbps) || _bw.kbps || 1000;
+  if (on) on.checked = !!_bw.active;
+  bwPaint();
+}
+function bwKbpsCommit() {
+  const v = clampField(document.getElementById('set-bw-kbps'), 1000);
+  settings.bandwidthKbps = v;
+  api.saveSettings({ bandwidthKbps: v });
+}
+async function bwApply() {
+  const btn = document.getElementById('bw-apply');
+  if (!btn || btn.disabled) return;
+  const on = document.getElementById('set-bw-on').checked;
+  const kbps = clampField(document.getElementById('set-bw-kbps'), 1000);
+  if (on === !!_bw.active && (!on || kbps === _bw.kbps)) { toast(on ? 'That limit is already on' : 'No limit is set', 'ok'); return; }
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Waiting for Windows…';
+  let r;
+  try { r = await api.applyBandwidth(on, kbps); } catch (e) { r = { ok: false, error: e?.message || String(e) }; }
+  btn.disabled = false;
+  btn.textContent = label;
+  if (r && r.ok) {
+    _bw = r;
+    settings.bandwidthKbps = kbps;
+    api.saveSettings({ bandwidthKbps: kbps });
+    bwPaint();
+    toast(on ? 'Upload limited to ' + kbps + ' kbit/s' : 'Upload limit removed', on ? 'ok' : 'err');
+    logEntry('info', 'system', on ? `Upload limited to ${kbps} kbit/s` : 'Upload limit removed', { kbps });
+  } else {
+    toast((r && r.error) || 'Could not change the upload limit', 'err');
+  }
+}
+
 // ── Roblox install picker (Settings > Roblox) ─────────────────────────────
 let _installs = [];
-async function installsInit() {
-  try { _installs = (await api.listInstalls()) || []; } catch { _installs = []; }
+// rescan: look again right now instead of using the short cache. notify: say what was found.
+async function installsInit(rescan = false, notify = false) {
+  try { _installs = (await (rescan ? api.rescanInstalls() : api.listInstalls())) || []; } catch { _installs = []; }
   const menu = document.getElementById('cdd-install-menu');
   if (!menu) return;
   const opt = (value, name, desc) =>
@@ -957,12 +1059,20 @@ async function installsInit() {
         + (i.latest ? ' · ' + i.latest : '')
         + ' · ' + i.versions.length + ' build' + (i.versions.length === 1 ? '' : 's'))).join('');
   installUpdateUI(settings.robloxInstall || '');
+  // The line always says what the latest look found, so it can never keep
+  // claiming nothing is installed after something has shown up.
   const desc = document.getElementById('install-desc');
-  if (desc && !_installs.length) {
-    desc.textContent = 'No Roblox installation found. Install Roblox (or a bootstrapper) and reopen this tab.';
-    settingsDetailsInit(); // the text replaced the row's details chevron
+  if (desc) {
+    desc.textContent = _installs.length
+      ? 'Found ' + _installs.map(i => i.name + (i.versions.length > 1 ? ' (' + i.versions.length + ' builds)' : '')).join(', ') + '.'
+      : 'No Roblox found in %LOCALAPPDATA%. Install Roblox or a bootstrapper, then press Rescan.';
   }
+  if (notify) toast(_installs.length ? 'Found ' + _installs.map(i => i.name).join(', ') : 'No Roblox install found', _installs.length ? 'ok' : 'err');
 }
+// Coming back to the app after installing something: look again, if this is the tab that shows it.
+window.addEventListener('focus', () => {
+  if (_settingsTabNow === 'roblox' && document.querySelector('#page-settings.active')) installsInit(true);
+});
 function installUpdateUI(path) {
   const found = _installs.find(i => i.path.toLowerCase() === String(path || '').toLowerCase());
   const label = document.getElementById('cdd-install-label');
@@ -1182,7 +1292,7 @@ function settingsTab(tab) {
     if (btn) btn.classList.toggle('active', t === tab);
   });
   if (prevTab !== tab || wasSearching) panelSwap(document.getElementById('stab-panel-' + tab), swapDir(SETTINGS_TABS, prevTab, tab));
-  if (tab === 'performance') { renderEngineInit(); agPaint(); }
+  if (tab === 'performance') { renderEngineInit(); agPaint(); perfSyncSegs(); bwInit(); }
   if (tab === 'roblox') installsInit();
   refreshAllSliderFills();
   positionTabSlider(document.getElementById('stab-general')?.closest('.tab-bar'));
@@ -1223,7 +1333,8 @@ function goTo(p) {
   }
   if (p === 'packages') renderPackages();
   if (p === 'accounts') pollSystemStats();
-  if (p === 'mixer') mixInit();
+  if (p === 'mixer') { if (!(fromPage?.id === 'page-mixer' && _mixDirty)) mixInit(); } // the Mixer button while on it keeps unapplied changes
+  else if (_mixDirty) { mixDirty(false); toast('Mixer changes were not applied', 'err'); }
   if (p === 'tracking') renderTrackingPage();
   // generator page
   refreshAllSliderFills();
@@ -2257,7 +2368,8 @@ function editPerfFill(a) {
   const g = Number(a.launchGfx) || 0;
   gfx.value = g >= 1 && g <= 21 ? String(g) : '';
   setEditWindow(['normal', 'small', 'minimized', 'hidden'].includes(a.launchWindow) ? a.launchWindow : '');
-  setEditAdv(a.launchAdvGfx === 'on' || a.launchAdvGfx === 'off' ? a.launchAdvGfx : '');
+  // An older "off" meant the same as Roblox's own choices, and an older "on" the same as Settings.
+  setEditAdv(a.launchAdvGfx === 'default' || a.launchAdvGfx === 'off' ? 'default' : '');
 }
 let _editAdv = '';
 function setEditAdv(v) {
@@ -2415,7 +2527,13 @@ async function removeAcc(id) {
     // the next launch with no word about why.
     try { await api.removeAccount(id); }
     catch (e) { toast('Could not remove ' + a.username + ': ' + (e?.message || e), 'err'); return; }
-    accounts = accounts.filter(x => x.id !== id); render();
+    const grid = document.getElementById('grid');
+    const gone = grid && grid.querySelector(':scope > .card[data-id="' + CSS.escape(id) + '"]');
+    accounts = accounts.filter(x => x.id !== id);
+    // The card fades away and the rest slide into the gap; render() then only
+    // refreshes the counts, since the other cards are already as they should be.
+    if (gone && accounts.length && !motionOff()) leaveAndShift(gone, grid, ':scope > .card, :scope > .card-add', 'card', { after: render });
+    else render();
     // Drop per-account UI bookkeeping so nothing keeps referring to it.
     _launchedIds.delete(id);
     delete _cookieStatus[id];
@@ -2577,7 +2695,7 @@ function renderPackages() {
           <div class="pkg-avatar${_launchedIds.has(m.id) ? ' online' : ''}" id="pkg-av-${p.id}-${m.id}" data-acc-id="${m.id}" data-uid="${esc(m.userId || '')}" data-uname="${esc(m.username || '')}" data-nick="${esc(m.nickname || '')}">${esc((m.username || '?')[0].toUpperCase())}<span class="pkg-avatar-dot"></span></div>
           <span class="pkg-member-name">${esc(m.nickname || m.username || 'Unknown')}</span>
         </div>`).join('') + (extra > 0 ? `<button class="pkg-member more" onclick="openEditPackage(${jsArg(p.id)})" title="See every account in this group">+${extra} more</button>` : '')
-      : `<div class="pkg-members-empty">No accounts in this group yet.<button class="pkg-add-link" onclick="openEditPackage(${jsArg(p.id)})">Add accounts</button></div>`;
+      : `<div class="pkg-members-empty">No accounts in this group yet.</div>`;
     return `
     <div class="pkg-card" data-id="${p.id}" style="animation-delay:${i * 18}ms">
       <div class="pkg-card-top">
@@ -2708,27 +2826,35 @@ function deletePackage(id) {
 // The card fades and shrinks away, then the groups after it slide into the gap
 // (a CSS animation per card, see .pkg-leaving and .pkg-shift in styles.css).
 function pkgRemoveCard(card, list) {
-  card.classList.add('pkg-leaving');
+  leaveAndShift(card, list, '.pkg-card', 'pkg', { empty: renderPackages });
+}
+
+// Shared by groups ('pkg') and accounts ('card'): the CSS classes are
+// <prefix>-leaving and <prefix>-shift, the keyframes <prefix>-out.
+// opts.empty runs instead of the slide when nothing is left, opts.after runs last.
+function leaveAndShift(card, list, itemSel, prefix, opts = {}) {
+  card.classList.add(prefix + '-leaving');
   let done = false;
   const finish = () => {
     if (done) return;
     done = true;
-    const rest = [...list.querySelectorAll('.pkg-card')].filter(c => c !== card);
+    const rest = [...list.querySelectorAll(itemSel)].filter(c => c !== card);
     const before = new Map(rest.map(c => [c, c.getBoundingClientRect()]));
     card.remove();
-    if (!rest.length) { renderPackages(); return; } // the "no groups" message
+    if (!rest.length && opts.empty) { opts.empty(); return; } // the "nothing here" message
     for (const c of rest) {
       const a = before.get(c), b = c.getBoundingClientRect();
       const dx = a.left - b.left, dy = a.top - b.top;
       if (Math.abs(dx) < 1 && Math.abs(dy) < 1) continue;
       c.style.setProperty('--fx', dx + 'px');
       c.style.setProperty('--fy', dy + 'px');
-      c.classList.remove('pkg-shift');
+      c.classList.remove(prefix + '-shift');
       void c.offsetWidth; // restart it if it was already running
-      c.classList.add('pkg-shift');
+      c.classList.add(prefix + '-shift');
     }
+    if (opts.after) opts.after();
   };
-  card.addEventListener('animationend', e => { if (e.target === card && e.animationName === 'pkg-out') finish(); });
+  card.addEventListener('animationend', e => { if (e.target === card && e.animationName === prefix + '-out') finish(); });
   setTimeout(finish, 450);
 }
 
@@ -3428,7 +3554,7 @@ const FF_INFO = {
   FIntFRMMinGrassDistance: 'Grass draw distance, min',
   FIntGrassMovementReducedMotionFactor: 'Grass movement (0 keeps it still)',
 };
-let _ffAllowed = [], _ffList = [], _ffSaveTimer = null, _ffPicking = -1;
+let _ffAllowed = [], _ffList = [];
 async function ffInit() {
   let r = null;
   try { r = await api.loadCustomFFlags(); } catch {}
@@ -3437,15 +3563,12 @@ async function ffInit() {
   // A flag saved as False back when there was a switch: on/off flags are always on now.
   let fixed = false;
   _ffList.forEach(e => { if (ffKind(e.name) === 'bool' && e.value !== 'True') { e.value = 'True'; fixed = true; } });
-  if (fixed) ffSaveSoon();
+  if (fixed) ffSave(true); // a repair of old data, not a change of yours
   ffRender();
 }
 function ffKind(name) { return (_ffAllowed.find(f => f.name === name) || {}).kind || 'int'; }
-function ffScopeLabel(e) {
-  if (!e.accounts || !e.accounts.length) return 'All accounts';
-  const names = e.accounts.map(id => accounts.find(a => a.id === id)).filter(Boolean).map(a => a.nickname || a.username || 'Unknown');
-  return names.length === 1 ? names[0] : names.length + ' accounts';
-}
+// A row's place in the list, so a row can leave without the others being redrawn.
+function ffIdx(el) { return [...document.querySelectorAll('#ff-list > .ff-row')].indexOf(el.closest('.ff-row')); }
 function ffRender() {
   const el = document.getElementById('ff-list');
   if (!el) return;
@@ -3458,22 +3581,16 @@ function ffRender() {
     // On/off flags are always on: adding one is what turns it on.
     const value = kind === 'bool'
       ? ''
-      : `<input class="ff-num" inputmode="numeric" value="${esc(e.value)}" oninput="ffSet(${i},'value',this.value)" aria-label="Value"/>`;
-    const picker = _ffPicking === i ? `<div class="ff-pick">
-        <button class="mk-chip-lite${!e.accounts || !e.accounts.length ? ' on' : ''}" onclick="ffScopeAll(${i})">All accounts</button>
-        ${accounts.map(a => `<button class="mk-chip-lite${(e.accounts || []).includes(a.id) ? ' on' : ''}" onclick="ffToggleAcct(${i},${jsArg(a.id)})">${esc(a.nickname || a.username || 'Unknown')}</button>`).join('')}
-      </div>` : '';
+      : `<input class="ff-num" inputmode="numeric" value="${esc(e.value)}" oninput="ffSet(ffIdx(this),'value',this.value)" aria-label="Value"/>`;
     return `<div class="ff-row">
       <div class="ff-main">
-        <select class="field-select ff-name" onchange="ffSet(${i},'name',this.value)" aria-label="Flag">
+        <select class="field-select ff-name" onchange="ffSet(ffIdx(this),'name',this.value)" aria-label="Flag">
           ${_ffAllowed.map(f => `<option value="${esc(f.name)}" ${f.name === e.name ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}
         </select>
         ${value}
-        <button class="ff-scope${_ffPicking === i ? ' open' : ''}" onclick="ffTogglePick(${i})" title="Which accounts use this flag"><span class="material-icons-round">group</span><span>${esc(ffScopeLabel(e))}</span><span class="material-icons-round">expand_more</span></button>
-        <button class="ff-del" onclick="ffRemove(${i})" title="Remove" aria-label="Remove"><span class="material-icons-round">close</span></button>
+        <button class="ff-del" onclick="ffRemove(ffIdx(this))" title="Remove" aria-label="Remove"><span class="material-icons-round">close</span></button>
       </div>
       <div class="ff-desc">${esc(FF_INFO[e.name] || '')}</div>
-      ${picker}
     </div>`;
   }).join('');
 }
@@ -3482,51 +3599,47 @@ function ffAdd() {
   const pick = _ffAllowed.find(f => !used.has(f.name)) || _ffAllowed[0];
   if (!pick) return;
   _ffList.push({ name: pick.name, value: pick.kind === 'bool' ? 'True' : '0' });
-  _ffPicking = -1;
   ffRender();
-  ffSaveSoon();
+  mixDirty();
   const rows = document.querySelectorAll('#ff-list > .ff-row');
   rowGrow(rows[rows.length - 1], rows.length > 1);
 }
 function ffRemove(i) {
   const row = document.querySelectorAll('#ff-list > .ff-row')[i];
-  const drop = () => { _ffList.splice(i, 1); _ffPicking = -1; ffRender(); ffSaveSoon(); };
-  if (!row || row.dataset.leaving) { if (!row) drop(); return; }
+  if (i < 0 || !_ffList[i]) return;
+  if (!row || row.dataset.leaving) return;
   row.dataset.leaving = '1';
-  rowShrink(row, row.previousElementSibling || row.nextElementSibling).then(drop);
+  // Only the removed row is touched: the others stay exactly as they are, so
+  // nothing flickers or jumps when it is gone.
+  rowShrink(row, row.previousElementSibling || row.nextElementSibling).then(() => {
+    const at = [...document.querySelectorAll('#ff-list > .ff-row')].indexOf(row);
+    if (at >= 0) _ffList.splice(at, 1);
+    row.remove();
+    if (!_ffList.length) ffRender(); // the "no custom flags" note, which fades in
+    mixDirty();
+  });
 }
 function ffSet(i, key, v) {
   const e = _ffList[i]; if (!e) return;
   e[key] = v;
   if (key === 'name') { e.value = ffKind(v) === 'bool' ? 'True' : '0'; ffRender(); }
-  ffSaveSoon();
+  mixDirty();
 }
-function ffTogglePick(i) { _ffPicking = _ffPicking === i ? -1 : i; ffRender(); }
-function ffScopeAll(i) { const e = _ffList[i]; if (!e) return; delete e.accounts; ffRender(); ffSaveSoon(); }
-function ffToggleAcct(i, id) {
-  const e = _ffList[i]; if (!e) return;
-  const set = new Set(e.accounts || []);
-  set.has(id) ? set.delete(id) : set.add(id);
-  if (set.size) e.accounts = [...set]; else delete e.accounts;
-  ffRender();
-  ffSaveSoon();
-}
-function ffSaveSoon() {
-  clearTimeout(_ffSaveTimer);
-  _ffSaveTimer = setTimeout(ffSave, 500);
-}
-async function ffSave() {
+// Writes the list. quiet: no message, and the result says what happened instead.
+async function ffSave(quiet = false) {
   // Rows with an unfinished number stay on screen but aren't saved yet.
   const ready = _ffList
     .filter(e => ffKind(e.name) === 'bool' || /^-?\d+$/.test(String(e.value).trim()))
     .map(e => ffKind(e.name) === 'bool' ? { ...e, value: 'True' } : e);
   let r = null;
   try { r = await api.saveCustomFFlags(ready); } catch (e) { r = { ok: false, error: e?.message || String(e) }; }
-  if (!r || !r.ok) { toast((r && r.error) || 'Could not save the custom flags', 'err'); return; }
-  toast('Custom flags saved. Used from the next launch', 'ok');
+  const ok = !!(r && r.ok);
+  if (!quiet) toast(ok ? 'Custom flags saved. Used from the next launch' : ((r && r.error) || 'Could not save the custom flags'), ok ? 'ok' : 'err');
+  return ok ? { ok, skipped: _ffList.length - ready.length } : { ok, error: r && r.error };
 }
 
 async function mixInit() {
+  mixDirty(false); // whatever was changed and not applied is dropped when the page is opened again
   ffInit();
   // Pull current values from saved Fast Flags + settings.
   let flags = {};
@@ -3575,44 +3688,25 @@ function mixFpsInput(v) {
   const sl = document.getElementById('mix-fps');
   document.getElementById('mix-fps-val').textContent = v;
   updateSliderFill(sl);
+  mixDirty();
 }
-async function mixFpsUnlToggle() {
+function mixFpsUnlToggle() {
   const unl = document.getElementById('mix-fps-unl').checked;
-  document.getElementById('mix-fps').disabled = unl;
-  if (unl) {
-    document.getElementById('mix-fps-val').textContent = '∞';
-    await mixWriteFps(0, 'FPS set to unlimited');
-  } else {
-    mixFpsCommit();
-  }
-}
-
-async function mixFpsCommit() {
-  if (document.getElementById('mix-fps-unl').checked) return;
-  const v = parseInt(document.getElementById('mix-fps').value, 10);
-  document.getElementById('mix-fps-val').textContent = v;
-  await mixWriteFps(v, 'FPS cap: ' + v);
+  const sl = document.getElementById('mix-fps');
+  sl.disabled = unl;
+  document.getElementById('mix-fps-val').textContent = unl ? '∞' : sl.value;
+  mixDirty();
 }
 
 // The backend remembers the written cap as the one its FPS guard protects,
 // so a successful write also arms the protection (unless it's switched off).
-async function mixWriteFps(cap, okMsg) {
+async function mixWriteFps(cap) {
   let res;
   try { res = await api.writeFpsCap(cap); } catch (e) { res = { ok: false, error: e?.message || String(e) }; }
-  if (!res || res.ok === false) { toast((res && res.error) || 'Failed to set FPS cap', 'err'); return false; }
+  if (!res || res.ok === false) return { ok: false, error: res && res.error };
   settings.fpsCap = res.value;
-  logEntry('info', 'system', okMsg, { fpsCap: res.value });
-  toast(okMsg + (settings.fpsCapLock !== false ? ' (next launch, protected)' : ' (next launch)'), 'ok');
-  return true;
-}
-
-async function mixFpsLockToggle() {
-  const on = document.getElementById('mix-fps-lock').checked;
-  settings.fpsCapLock = on;
-  let saved = false;
-  try { saved = await api.saveSettings({ fpsCapLock: on }); } catch {}
-  if (!saved) { toast('Could not save FPS protection', 'err'); return; }
-  toast(on ? 'FPS cap protected from overwrites' : 'FPS cap protection off', on ? 'ok' : 'err');
+  logEntry('info', 'system', cap === 0 ? 'FPS set to unlimited' : 'FPS cap: ' + cap, { fpsCap: res.value });
+  return { ok: true };
 }
 
 function clampInt(v, min, max, dflt) {
@@ -3777,7 +3871,7 @@ async function mixWriteFlag(key, value) {
   try { flags = (await api.readFFlags()) || {}; } catch {}
   if (value === null) delete flags[key];
   else flags[key] = String(value);
-  try { await api.writeFFlags(flags); } catch {}
+  try { return !!(await api.writeFFlags(flags)); } catch { return false; }
 }
 
 // ── Rendering engine (Settings > Performance) ────────────────────────────
@@ -3825,28 +3919,37 @@ async function setRenderEngine(engine) {
 }
 
 // ── Advanced graphics (Settings > Performance) ───────────────────────────
-// A group of allowlisted graphics flags behind one switch, for every account.
-// The choices are kept even while it's off, so turning it back on restores
-// them. An account can override the switch (launchAdvGfx "on"/"off"); the
-// backend adds or removes the flags for that launch only. It also keeps these
-// flags out of the custom FFlag list. Saved as lighterRendering before the rename.
+// Anti-aliasing, texture quality and grass, for every account. Each is either a
+// value or "default", which is Roblox's own choice: nothing is written for it,
+// and a flag set earlier is taken out again. An account can opt out of all of
+// them (launchAdvGfx "default" in Edit account); the backend takes the flags
+// out for that launch only. These flags stay out of the custom FFlag list.
+// Saved as lighterRendering before the rename, and with one on/off switch
+// before that, so both older shapes are read.
 const AG_FLAGS = ['FIntDebugForceMSAASamples', 'DFFlagTextureQualityOverrideEnabled', 'DFIntTextureQualityOverride', 'FIntFRMMaxGrassDistance', 'FIntFRMMinGrassDistance'];
-const AG_DEFAULT = { on: false, msaa: 1, texture: 0, grass: true };
-const AG_MSAA = { 1: 'x1', 2: 'x2', 4: 'x4', 8: 'x8' };
-const AG_TEXTURE = { 0: 'Lowest', 1: 'Low', 2: 'Medium', 3: 'High' };
+const AG_DEFAULT = { msaa: 'default', texture: 'default', grass: 'default' };
+const AG_MSAA = { default: 'Default', 1: 'x1', 2: 'x2', 4: 'x4', 8: 'x8' };
+const AG_TEXTURE = { default: 'Default', 0: 'Lowest', 1: 'Low', 2: 'Medium', 3: 'High' };
+const AG_GRASS = { default: 'Default', hidden: 'Hidden' };
 function agState() {
-  const s = Object.assign({}, AG_DEFAULT, settings.advancedGraphics || settings.lighterRendering || {});
-  if (!AG_MSAA[s.msaa]) s.msaa = AG_DEFAULT.msaa;
-  if (!AG_TEXTURE[s.texture]) s.texture = AG_DEFAULT.texture;
+  const raw = settings.advancedGraphics || settings.lighterRendering || {};
+  let s;
+  if (typeof raw.on === 'boolean') {
+    // The old shape, with its switch: off meant none of the options applied.
+    s = raw.on
+      ? { msaa: AG_MSAA[raw.msaa] ? raw.msaa : 1, texture: AG_TEXTURE[raw.texture] ? raw.texture : 0, grass: raw.grass === false ? 'default' : 'hidden' }
+      : { ...AG_DEFAULT };
+  } else {
+    s = Object.assign({}, AG_DEFAULT, raw);
+  }
+  if (!AG_MSAA[s.msaa]) s.msaa = 'default';
+  if (!AG_TEXTURE[s.texture]) s.texture = 'default';
+  if (!AG_GRASS[s.grass]) s.grass = 'default';
   return s;
 }
+function agAny(s = agState()) { return s.msaa !== 'default' || s.texture !== 'default' || s.grass !== 'default'; }
 function agPaint() {
   const s = agState();
-  const on = document.getElementById('set-advgfx');
-  if (on) on.checked = s.on;
-  const grass = document.getElementById('set-ag-grass');
-  if (grass) grass.checked = s.grass;
-  document.getElementById('ag-group')?.classList.toggle('off', !s.on);
   const pick = (name, value, label) => {
     const l = document.getElementById('cdd-' + name + '-label');
     if (l) l.textContent = label;
@@ -3855,20 +3958,21 @@ function agPaint() {
   };
   pick('agmsaa', s.msaa, AG_MSAA[s.msaa]);
   pick('agtex', s.texture, AG_TEXTURE[s.texture]);
+  pick('aggrass', s.grass, AG_GRASS[s.grass]);
 }
-// Puts the group's flags in the FFlag file (or takes them out when off).
+// Puts the chosen options' flags in the FFlag file, and takes out the rest.
 async function agApply() {
   const s = agState();
   let flags = {};
   try { flags = (await api.readFFlags()) || {}; } catch {}
   const before = JSON.stringify(flags);
   for (const f of AG_FLAGS) delete flags[f];
-  if (s.on) {
-    flags.FIntDebugForceMSAASamples = String(s.msaa);
+  if (s.msaa !== 'default') flags.FIntDebugForceMSAASamples = String(s.msaa);
+  if (s.texture !== 'default') {
     flags.DFFlagTextureQualityOverrideEnabled = 'True';
     flags.DFIntTextureQualityOverride = String(s.texture);
-    if (s.grass) { flags.FIntFRMMaxGrassDistance = '0'; flags.FIntFRMMinGrassDistance = '0'; }
   }
+  if (s.grass === 'hidden') { flags.FIntFRMMaxGrassDistance = '0'; flags.FIntFRMMinGrassDistance = '0'; }
   if (JSON.stringify(flags) === before) return true;
   try { return !!(await api.writeFFlags(flags)); } catch { return false; }
 }
@@ -3881,11 +3985,10 @@ async function agSet(patch) {
   const written = await agApply();
   if (!saved || !written) { toast(saved ? "Saved, but Roblox's FFlag file could not be written" : 'Could not save Advanced graphics', 'err'); return; }
   const s = settings.advancedGraphics;
-  const when = s.on ? ' (next launch)' : '';
-  if ('on' in patch) toast(s.on ? 'Advanced graphics on for every account (next launch)' : 'Advanced graphics off (next launch)', s.on ? 'ok' : 'err');
-  else if ('msaa' in patch) toast('Anti-aliasing: ' + AG_MSAA[s.msaa] + when, 'ok');
-  else if ('texture' in patch) toast('Texture quality: ' + AG_TEXTURE[s.texture] + when, 'ok');
-  else if ('grass' in patch) toast((s.grass ? 'Grass hidden' : 'Grass shown') + when, 'ok');
+  const next = ' (next launch)';
+  if ('msaa' in patch) toast('Anti-aliasing: ' + AG_MSAA[s.msaa] + next, 'ok');
+  else if ('texture' in patch) toast('Texture quality: ' + AG_TEXTURE[s.texture] + next, 'ok');
+  else if ('grass' in patch) toast('Grass: ' + AG_GRASS[s.grass] + next, 'ok');
 }
 
 // ── Settings: expandable details and search ──────────────────────────────
@@ -3943,15 +4046,19 @@ function settingsSearch(raw) {
     for (const el of panel.children) {
       if (el.classList.contains('st-sec')) { sec = el; continue; }
       if (!el.classList.contains('sc')) continue;
-      const secHit = !!(sec && hit(sec));
+      const secHit = !!(sec && hit(sec.querySelector('.st-sec-t') || sec)); // a section's button text isn't its name
       let cardHits = 0;
       let lastTop = null;
       for (const part of el.children) {
         if (part.classList.contains('sr')) {
-          const ok = secHit || hit(part.querySelector('.sr-left') || part);
+          // A row's panel (the options under its switch) is searched with it.
+          const panel = part.nextElementSibling?.classList.contains('sr-sub') ? part.nextElementSibling : null;
+          const ok = secHit || hit(part.querySelector('.sr-left') || part) || !!(panel && hit(panel));
           part.classList.toggle('st-hide', !ok);
           if (ok) cardHits++;
           lastTop = { row: part, ok };
+        } else if (part.classList.contains('sr-sub')) {
+          part.classList.toggle('st-hide', !(lastTop && lastTop.ok));
         } else if (part.classList.contains('sr-group')) {
           // A sub-option match keeps its parent row; a parent match keeps the whole group.
           let sub = 0;
@@ -3996,49 +4103,28 @@ document.addEventListener('input', e => {
 function mixGfxInput(v) {
   document.getElementById('mix-gfx-val').textContent = v;
   updateSliderFill(document.getElementById('mix-gfx'));
+  mixDirty();
 }
 function mixGfxAutoToggle() {
   const auto = document.getElementById('mix-gfx-auto').checked;
-  document.getElementById('mix-gfx').disabled = auto;
-  if (auto) {
-    document.getElementById('mix-gfx-val').textContent = '';
-    mixWriteFlag(FF_GFX, null);
-    toast('Graphics set to Auto', 'ok');
-  } else {
-    mixGfxCommit();
-  }
-}
-function mixGfxCommit() {
-  if (document.getElementById('mix-gfx-auto').checked) return;
-  const v = document.getElementById('mix-gfx').value;
-  document.getElementById('mix-gfx-val').textContent = v;
-  mixWriteFlag(FF_GFX, v);
-  toast('Graphics quality: ' + v + ' (next launch)', 'ok');
+  const sl = document.getElementById('mix-gfx');
+  sl.disabled = auto;
+  document.getElementById('mix-gfx-val').textContent = auto ? '' : sl.value;
+  mixDirty();
 }
 
-// Volume - applies live while dragging (debounced so we don't spawn the helper
-// on every drag tick), and saves + confirms on release.
+// Volume: moving the slider only stages it; Apply and save sets it.
 function mixVolInput(v) {
   document.getElementById('mix-vol-val').textContent = v + '%';
   updateSliderFill(document.getElementById('mix-vol'));
-  clearTimeout(_volTimer);
-  _volTimer = setTimeout(() => { api.setRobloxVolume(parseInt(v, 10)); }, 90);
+  mixDirty();
 }
-function mixVolCommit() {
-  const v = parseInt(document.getElementById('mix-vol').value, 10);
-  document.getElementById('mix-vol-val').textContent = v + '%';
-  updateSliderFill(document.getElementById('mix-vol'));
-  settings.masterVolume = v;
-  api.saveSettings({ masterVolume: v });
-  clearTimeout(_volTimer);
-  _volTimer = setTimeout(async () => {
-    const res = await api.setRobloxVolume(v);
-    if (res && res.ok) {
-      toast('Volume ' + v + '%', 'ok');
-    } else {
-      toast('Couldn\u2019t set volume' + (res && res.error ? ': ' + res.error : ''), 'err');
-    }
-  }, 60);
+
+// Nothing in the Mixer is written until Apply and save: the controls above only
+// stage a change and show "Unsaved changes".
+function mixDirty(on = true) {
+  _mixDirty = on;
+  document.getElementById('mix-pending')?.classList.toggle('show', on);
 }
 
 // Kill all
@@ -4066,23 +4152,45 @@ async function mixKillAll() {
   } else toast('Kill failed' + (res && res.error ? ': ' + res.error : ''), 'err');
 }
 
-// Re-pushes current graphics/fps/volume values and confirms; doesn't touch
-// any running process (that's the separate Kill all Roblox button).
+// Writes everything on the page and says once how it went. Doesn't touch any
+// running process except the volume (that's the separate Kill all Roblox button).
 async function mixApply() {
   const btn = document.getElementById('mix-relaunch-btn');
   if (btn.disabled) return;
   btn.disabled = true;
-  const orig = btn.innerHTML;
+  const failed = [];
 
-  mixGfxCommit();
-  mixFpsCommit();
+  // The FPS guard reads this when the cap is written, so it goes first.
+  const lock = document.getElementById('mix-fps-lock').checked;
+  settings.fpsCapLock = lock;
+  let saved = false;
+  try { saved = await api.saveSettings({ fpsCapLock: lock }); } catch {}
+  if (!saved) failed.push('FPS protection');
+
+  const gfxAuto = document.getElementById('mix-gfx-auto').checked;
+  if (!(await mixWriteFlag(FF_GFX, gfxAuto ? null : document.getElementById('mix-gfx').value))) failed.push('graphics');
+
+  const fpsUnl = document.getElementById('mix-fps-unl').checked;
+  const fps = await mixWriteFps(fpsUnl ? 0 : parseInt(document.getElementById('mix-fps').value, 10));
+  if (!fps.ok) failed.push('FPS cap' + (fps.error ? ' (' + fps.error.replace(/\.$/, '') + ')' : ''));
+
   // parseInt: roblox_set_volume takes a number, and the raw slider string made
   // the invoke reject (silently, in this catch), so Apply never set volume.
-  try { await api.setRobloxVolume(parseInt(document.getElementById('mix-vol').value, 10)); } catch {}
+  const vol = parseInt(document.getElementById('mix-vol').value, 10);
+  settings.masterVolume = vol;
+  let volSaved = false;
+  try { volSaved = !!(await api.saveSettings({ masterVolume: vol })); } catch {}
+  let volRes = null;
+  try { volRes = await api.setRobloxVolume(vol); } catch {}
+  if (!volSaved || (volRes && volRes.ok === false)) failed.push('volume');
+
+  const ff = await ffSave(true);
+  if (!ff.ok) failed.push('custom flags');
 
   btn.disabled = false;
-  btn.innerHTML = orig;
-  toast('Settings applied', 'ok');
+  if (failed.length) { toast('Could not save: ' + failed.join(', '), 'err'); return; }
+  mixDirty(false);
+  toast(ff.skipped ? 'Applied and saved. ' + ff.skipped + ' flag' + (ff.skipped === 1 ? '' : 's') + ' still has no number and was left out' : 'Applied and saved', ff.skipped ? 'err' : 'ok');
 }
 
 async function mixTrimMemory(btnId = 'set-trim-btn') {
@@ -5087,7 +5195,9 @@ function rowShrink(row, hasGap) {
   row.style.pointerEvents = 'none';
   const anim = row.animate([
     { height: row.offsetHeight + 'px', opacity: 1, marginTop: '0px', transform: 'none' },
-    { height: '0px', opacity: 0, marginTop: hasGap ? -LIST_GAP + 'px' : '0px', transform: 'scale(.98)', paddingTop: '0px', paddingBottom: '0px', borderWidth: '0px' },
+    // The borders are spelled out: as a shorthand they stayed 2px tall and the
+    // row snapped shut at the very end.
+    { height: '0px', opacity: 0, marginTop: hasGap ? -LIST_GAP + 'px' : '0px', transform: 'scale(.98)', paddingTop: '0px', paddingBottom: '0px', borderTopWidth: '0px', borderBottomWidth: '0px' },
   ], { duration: 240, easing: 'cubic-bezier(.4,0,.2,1)', fill: 'forwards' });
   return anim.finished.then(() => {}, () => {});
 }
